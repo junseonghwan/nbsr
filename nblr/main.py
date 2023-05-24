@@ -4,7 +4,6 @@ import numpy as np
 import torch
 from negbinomial_model import NegativeBinomialRegressionModel
 from utils import *
-import sklearn.preprocessing
 import os
 
 torch.set_default_dtype(torch.float64)
@@ -17,17 +16,6 @@ def cli():
 def moving_average(arr, window):
 	return np.convolve(arr, np.ones(window), 'valid') / window
 
-# @click.command()
-# @click.argument('counts', type=click.Path(exists=True))
-# @click.argument('coldata', type=click.Path(exists=True))
-# @click.argument('output', type=click.Path())
-# @click.argument('column_names', nargs=-1)
-# @click.option('-i', '--max_iter', default=1000, type=int)
-# @click.option('-l', '--learning_rate', default=0.1, type=float)
-# @click.option('--s0', default=2, type=float)
-# @click.option('--shape', default=2, type=float)
-# @click.option('--scale', default=1, type=float)
-# @click.option('--tol', default=0.1, type=float)
 def RunInference(counts, coldata, output, column_names, max_iter, learning_rate, s0, shape, scale, tol, window_size):
 	click.echo(counts)
 	click.echo(coldata)
@@ -35,7 +23,6 @@ def RunInference(counts, coldata, output, column_names, max_iter, learning_rate,
 	coldata_pd = pd.read_csv(coldata)
 	Y = counts_pd.transpose().to_numpy()
 	print("Y: ", Y.shape)
-	lb = sklearn.preprocessing.LabelBinarizer()
 	X = []
 	for col_name in column_names:
 		X.append(pd.get_dummies(coldata_pd[col_name]).to_numpy())
@@ -49,7 +36,8 @@ def RunInference(counts, coldata, output, column_names, max_iter, learning_rate,
 	optimizer = torch.optim.Adam(model.parameters(),lr=learning_rate)
 	loss_history = []
 	for i in range(max_iter):
-		loss = -model.log_posterior(model.mu, model.beta)
+		#loss = -model.log_posterior(model.mu, model.beta)
+		loss = -model.log_likelihood(model.mu, model.beta)
 		optimizer.zero_grad()
 		loss.backward(retain_graph=True)
 		optimizer.step()
@@ -85,7 +73,12 @@ def RunInference(counts, coldata, output, column_names, max_iter, learning_rate,
 
 	s = np.sum(Y, 1)
 	Y_fit, pi_fit = summarize(model, X, s, False, True)
-	return (Y_fit, pi_fit, model.mu.data.numpy(), model.beta.data.numpy(), model.phi.data.numpy())
+
+	# Compute logRR_i and Var(logRR_i) for each sample i.
+	# Estimate logRR and Var(logRR).
+	# Construct p-value for testing.
+
+	return (Y_fit, pi_fit, model.mu.data.numpy(), model.beta.data.numpy().reshape(model.covariate_count, model.dim), model.phi.data.numpy())
 
 @click.command()
 @click.argument('path', type=click.Path(exists=True))
@@ -98,7 +91,7 @@ def RunInference(counts, coldata, output, column_names, max_iter, learning_rate,
 @click.option('--scale', default=1, type=float)
 @click.option('--tol', default=0.1, type=float)
 @click.option('--window', default=10, type=int)
-def RunExperiments(path, experiment_index, column_names, max_iter, learning_rate, s0, shape, scale, tol, window):
+def BatchRun(path, experiment_index, column_names, max_iter, learning_rate, s0, shape, scale, tol, window):
 	begin, end = experiment_index.split(",")
 	for i in range(int(begin), int(end)+1):
 		output_path = os.path.join(path, "p" + str(i))
@@ -110,7 +103,27 @@ def RunExperiments(path, experiment_index, column_names, max_iter, learning_rate
 		np.savetxt(os.path.join(output_path, "phi.csv"), phi, delimiter=',')
 		np.savetxt(os.path.join(output_path, "pi.csv"), pi, delimiter=',')
 
-cli.add_command(RunExperiments)
+@click.command()
+@click.argument('counts', type=click.Path(exists=True))
+@click.argument('coldata', type=click.Path(exists=True))
+@click.argument('output', type=click.Path(exists=True))
+@click.argument('column_names', nargs=-1)
+@click.option('-i', '--max_iter', default=1000, type=int)
+@click.option('-l', '--learning_rate', default=0.1, type=float)
+@click.option('--s0', default=2, type=float)
+@click.option('--shape', default=2, type=float)
+@click.option('--scale', default=1, type=float)
+@click.option('--tol', default=0.1, type=float)
+@click.option('--window', default=10, type=int)
+def Run(counts, coldata, output, column_names, max_iter, learning_rate, s0, shape, scale, tol, window):
+	(_, pi, mu, beta, phi) = RunInference(counts, coldata, output, column_names, max_iter, learning_rate, s0, shape, scale, tol, window)
+	np.savetxt(os.path.join(output, "mu.csv"), mu, delimiter=',')
+	np.savetxt(os.path.join(output, "beta.csv"), beta, delimiter=',')
+	np.savetxt(os.path.join(output, "phi.csv"), phi, delimiter=',')
+	np.savetxt(os.path.join(output, "pi.csv"), pi, delimiter=',')
+
+cli.add_command(BatchRun)
+cli.add_command(Run)
 # cli.add_command(RunInference)
 
 if __name__ == '__main__':
