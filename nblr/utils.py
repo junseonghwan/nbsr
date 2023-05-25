@@ -30,8 +30,9 @@ def FisherInformation(model):
                          torch.column_stack((H[1][0], H[1][1]))))
     return(I)
 
-def log2RR(model, var, w0, w1):
+def logRR(model, var, w0, w1):
     # Get a copy of the design matrix.
+    print(var, w0, w1)
     X_df = pd.get_dummies(model.X_df, drop_first=True, dtype=int)
     Z = X_df.to_numpy()
     mu = model.mu.data.numpy()

@@ -20,13 +20,10 @@ def RunInference(counts, coldata, output, column_names, max_iter, learning_rate,
 	click.echo(counts)
 	click.echo(coldata)
 	counts_pd = pd.read_csv(counts)
-	coldata_pd = pd.read_csv(coldata)
+	coldata_pd = pd.read_csv(coldata, na_filter=False)
 	Y = counts_pd.transpose().to_numpy()
 	print("Y: ", Y.shape)
-	X = []
-	for col_name in column_names:
-		X.append(pd.get_dummies(coldata_pd[col_name]).to_numpy())
-	X = np.column_stack(X)
+	X = coldata_pd[column_names]
 	print("X: ", X.shape)
 
 	print(torch.get_default_dtype())
@@ -70,59 +67,34 @@ def RunInference(counts, coldata, output, column_names, max_iter, learning_rate,
 	# 		print(loss.data)
 	# 	if torch.abs(curr_loss - loss) < tol:
 	# 		break
-
-	s = np.sum(Y, 1)
-	Y_fit, pi_fit = summarize(model, X, s, False, True)
-
-	# Compute logRR_i and Var(logRR_i) for each sample i.
-	# Estimate logRR and Var(logRR).
-	# Construct p-value for testing.
-
-	return (Y_fit, pi_fit, model.mu.data.numpy(), model.beta.data.numpy().reshape(model.covariate_count, model.dim), model.phi.data.numpy())
-
-@click.command()
-@click.argument('path', type=click.Path(exists=True))
-@click.argument('experiment_index', type=str)
-@click.argument('column_names', nargs=-1)
-@click.option('-i', '--max_iter', default=1000, type=int)
-@click.option('-l', '--learning_rate', default=0.01, type=float)
-@click.option('--s0', default=2, type=float)
-@click.option('--shape', default=2, type=float)
-@click.option('--scale', default=1, type=float)
-@click.option('--tol', default=0.1, type=float)
-@click.option('--window', default=10, type=int)
-def BatchRun(path, experiment_index, column_names, max_iter, learning_rate, s0, shape, scale, tol, window):
-	begin, end = experiment_index.split(",")
-	for i in range(int(begin), int(end)+1):
-		output_path = os.path.join(path, "p" + str(i))
-		coldata_path = os.path.join(output_path, "X.csv")
-		counts_path = os.path.join(output_path, "Y.csv")
-		(_, pi, mu, beta, phi) = RunInference(counts_path, coldata_path, output_path, column_names, max_iter, learning_rate, s0, shape, scale, tol, window)
-		np.savetxt(os.path.join(output_path, "mu.csv"), mu, delimiter=',')
-		np.savetxt(os.path.join(output_path, "beta.csv"), beta, delimiter=',')
-		np.savetxt(os.path.join(output_path, "phi.csv"), phi, delimiter=',')
-		np.savetxt(os.path.join(output_path, "pi.csv"), pi, delimiter=',')
+	return model
 
 @click.command()
 @click.argument('counts', type=click.Path(exists=True))
 @click.argument('coldata', type=click.Path(exists=True))
 @click.argument('output', type=click.Path(exists=True))
-@click.argument('column_names', nargs=-1)
+@click.argument('var', nargs=-1)
 @click.option('-i', '--max_iter', default=1000, type=int)
 @click.option('-l', '--learning_rate', default=0.1, type=float)
+@click.option('--w0', default="null", type=str)
+@click.option('--w1', default="alt", type=str)
 @click.option('--s0', default=2, type=float)
 @click.option('--shape', default=2, type=float)
 @click.option('--scale', default=1, type=float)
 @click.option('--tol', default=0.1, type=float)
 @click.option('--window', default=10, type=int)
-def Run(counts, coldata, output, column_names, max_iter, learning_rate, s0, shape, scale, tol, window):
-	(_, pi, mu, beta, phi) = RunInference(counts, coldata, output, column_names, max_iter, learning_rate, s0, shape, scale, tol, window)
-	np.savetxt(os.path.join(output, "mu.csv"), mu, delimiter=',')
-	np.savetxt(os.path.join(output, "beta.csv"), beta, delimiter=',')
-	np.savetxt(os.path.join(output, "phi.csv"), phi, delimiter=',')
-	np.savetxt(os.path.join(output, "pi.csv"), pi, delimiter=',')
+def Run(counts, coldata, output, var, w0, w1, max_iter, learning_rate, s0, shape, scale, tol, window):
+	cols = list(var)
+	assert(len(var) == 1)
+	model = RunInference(counts, coldata, output, cols, max_iter, learning_rate, s0, shape, scale, tol, window)
+	logRRi, sd_est = logRR(model, cols[0], w0, w1)
+	beta = get_beta(model).data.numpy()
+	np.savetxt(os.path.join(output, "nblr_mu.csv"), model.mu.data.numpy(), delimiter=',')
+	np.savetxt(os.path.join(output, "nblr_beta.csv"), beta, delimiter=',')
+	np.savetxt(os.path.join(output, "nblr_phi.csv"), model.phi.data.numpy(), delimiter=',')
+	np.savetxt(os.path.join(output, "nblr_logRR.csv"), logRRi.transpose(), delimiter=',')
+	np.savetxt(os.path.join(output, "nblr_logRR_sd.csv"), sd_est.transpose(), delimiter=',')
 
-cli.add_command(BatchRun)
 cli.add_command(Run)
 # cli.add_command(RunInference)
 
