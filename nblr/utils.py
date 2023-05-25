@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-import scipy
+from scipy.special import logsumexp
 import pandas as pd
 
 def get_beta(model):
@@ -12,7 +12,7 @@ def summarize_(X, mu, beta, size_factor, pivot):
     if pivot:
         sample_count = X.shape[0]
         log_unnorm_expr = np.column_stack((log_unnorm_expr, np.zeros(sample_count)))
-    log_norm = scipy.special.logsumexp(log_unnorm_expr, 1)
+    log_norm = logsumexp(log_unnorm_expr, 1)
     pi_fitted = np.exp(log_unnorm_expr - log_norm[:,None])
     Y_fitted = size_factor[:,None] * pi_fitted
     return((Y_fitted, pi_fitted))
@@ -75,8 +75,8 @@ def logRR(model, var, w0, w1):
 
     Xbeta0 = np.column_stack((Xbeta0, zeros))
     Xbeta1 = np.column_stack((Xbeta1, zeros))
-    log_norm0 = scipy.special.logsumexp(Xbeta0, 1)
-    log_norm1 = scipy.special.logsumexp(Xbeta1, 1)
+    log_norm0 = logsumexp(Xbeta0, 1)
+    log_norm1 = logsumexp(Xbeta1, 1)
 
     offset = (beta_kprime1 - beta_kprime0).transpose()
     logRRi = offset + log_norm0 - log_norm1
