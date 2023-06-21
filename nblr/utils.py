@@ -30,6 +30,7 @@ def FisherInformation(model):
                          torch.column_stack((H[1][0], H[1][1]))))
     return(I)
 
+# Computes log P(Y = k | z, w_1) / log P(Y = k | z, w_0).
 def logRR(model, var, w0, w1):
     # Get a copy of the design matrix.
     print(var, w0, w1)

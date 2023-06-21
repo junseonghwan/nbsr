@@ -2,8 +2,8 @@ import click
 import pandas as pd
 import numpy as np
 import torch
-from negbinomial_model import NegativeBinomialRegressionModel
-from utils import *
+from nblr.negbinomial_model import NegativeBinomialRegressionModel
+from nblr.utils import *
 import os
 
 torch.set_default_dtype(torch.float64)
@@ -81,7 +81,7 @@ def RunInference(counts, coldata, output, column_names, max_iter, learning_rate,
 @click.option('--s0', default=2, type=float)
 @click.option('--shape', default=2, type=float)
 @click.option('--scale', default=1, type=float)
-@click.option('--tol', default=0.1, type=float)
+@click.option('--tol', default=0.01, type=float)
 @click.option('--window', default=10, type=int)
 def Run(counts, coldata, output, var, w0, w1, max_iter, learning_rate, s0, shape, scale, tol, window):
 	cols = list(var)
@@ -89,6 +89,7 @@ def Run(counts, coldata, output, var, w0, w1, max_iter, learning_rate, s0, shape
 	model = RunInference(counts, coldata, output, cols, max_iter, learning_rate, s0, shape, scale, tol, window)
 	logRRi, sd_est = logRR(model, cols[0], w0, w1)
 	beta = get_beta(model).data.numpy()
+	torch.save(model, os.path.join(output, "nblr_model"))
 	np.savetxt(os.path.join(output, "nblr_mu.csv"), model.mu.data.numpy(), delimiter=',')
 	np.savetxt(os.path.join(output, "nblr_beta.csv"), beta, delimiter=',')
 	np.savetxt(os.path.join(output, "nblr_phi.csv"), model.phi.data.numpy(), delimiter=',')
