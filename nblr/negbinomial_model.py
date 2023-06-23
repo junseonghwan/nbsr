@@ -25,6 +25,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         self.s0 = torch.tensor(s0, requires_grad=False)
         self.shape = torch.tensor(shape, requires_grad=False)
         self.scale = torch.tensor(scale, requires_grad=False)
+        self.converged = False
         print("RNA count:", self.rna_count)
         print("Sample count:", self.sample_count)
         print("Covariate count:", self.covariate_count)
