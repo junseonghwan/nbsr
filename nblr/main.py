@@ -23,7 +23,7 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 	if len(loss_history) < window_size:
 		return False
 
-	diffs = np.abs(np.diff(moving_average(loss_history, window)))
+	diffs = np.abs(np.diff(moving_average(loss_history, window_size)))
 	if np.all(diffs[-lookback_iterations:] < tol):
 		print(f"Convergence reached")
 		return True
