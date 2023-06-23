@@ -16,8 +16,14 @@ checkpoint_filename = "checkpoint.pth"
 def cli():
 	pass
 
-def assess_convergence(loss_history, tol, lookback_iterations):
-	diffs = np.abs(np.diff(loss_history))
+def moving_average(arr, window):
+	return np.convolve(arr, np.ones(window), 'valid') / window
+
+def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
+	if len(loss_history) < window_size:
+		return False
+
+	diffs = np.abs(np.diff(moving_average(loss_history, window)))
 	if np.all(diffs[-lookback_iterations:] < tol):
 		print(f"Convergence reached")
 		return True
@@ -95,7 +101,7 @@ def Results(model_path, output, var, w0, w1):
 @click.option('--shape', default=2, type=float)
 @click.option('--scale', default=1, type=float)
 @click.option('--tol', default=0.001, type=float)
-@click.option('--lookback_iterations', default=100, type=int)
+@click.option('--lookback_iterations', default=50, type=int)
 def Train(counts_path, coldata_path, output_path, vars, iterations, learning_rate, s0, shape, scale, tol, lookback_iterations):
 	assert(len(vars) > 0)
 	cols = list(vars)
@@ -124,7 +130,7 @@ def Train(counts_path, coldata_path, output_path, vars, iterations, learning_rat
 @click.option('-i', '--iterations', default=1000, type=int)
 @click.option('-r', '--repeats', default=10, type=int)
 @click.option('--tol', default=0.001, type=float)
-@click.option('--lookback_iterations', default=100, type=int)
+@click.option('--lookback_iterations', default=50, type=int)
 def Resume(checkpoint_path, iterations, repeats, tol, lookback_iterations):
 	checkpoint = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
 	counts_path = checkpoint['counts_path']
