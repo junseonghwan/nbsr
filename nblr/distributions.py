@@ -21,6 +21,15 @@ def log_gamma(x, shape, scale):
     log_pdf = (shape - 1) * torch.log(x) - x / scale - torch.lgamma(shape) - shape * torch.log(scale)
     return(log_pdf)
 
+def log_invgamma(x, alpha, beta):
+    log_term1 = alpha * torch.log(beta)
+    log_term2 = - torch.lgamma(alpha)
+    log_term3 = - (alpha + 1) * torch.log(x)
+    log_term4 = - beta / x
+
+    log_prob = log_term1 + log_term2 + log_term3 + log_term4
+    return log_prob
+
 # Let's optimize for beta.
 def log_normal(x, mu, std):
     """Compute the log pdf of x,

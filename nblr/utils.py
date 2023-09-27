@@ -120,4 +120,4 @@ def logRR(model, var, w0, w1):
     cov_mat = np.matmul(J, Sigma.data.numpy()) @ J.transpose(0, 2, 1)
     sd_est = np.sqrt(np.diagonal(cov_mat, axis1=1, axis2=2))
 
-    return(logRRi, sd_est)
+    return(logRRi, sd_est, pi0_hat, pi1_hat)
