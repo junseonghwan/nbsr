@@ -163,37 +163,8 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 	checkpoint = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
 	run(checkpoint, iterations, tol, lookback_iterations)
 
-@click.command()
-@click.argument('checkpoint_path', type=click.Path(exists=True))
-@click.argument('output', type=click.Path(exists=True))
-@click.argument('var', type=str)
-@click.argument('w0', type=str)
-@click.argument('w1', type=str)
-def results(checkpoint_path, output, var, w0, w1):
-	checkpoint = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
-	counts_path = checkpoint['counts_path']
-	coldata_path = checkpoint['coldata_path']
-	cols = checkpoint['cols']
-	s0 = checkpoint['s0']
-	shape = checkpoint['shape']
-	scale = checkpoint['scale']
-	pivot = checkpoint['pivot']
-	model = construct_model(counts_path, coldata_path, cols, s0, shape, scale, pivot)
-	model.load_state_dict(checkpoint['best_model_state_dict'])
-
-	logRRi, logRRi_sd, pi0_hat, pi1_hat = logRR(model, var, w0, w1)
-
-	np.savetxt(os.path.join(output, "nblr_logRR.csv"), logRRi.transpose(), delimiter=',')
-	np.savetxt(os.path.join(output, "nblr_logRR_sd.csv"), logRRi_sd.transpose(), delimiter=',')
-	np.savetxt(os.path.join(output, "nblr_pi0.csv"), pi0_hat.transpose(), delimiter=',')
-	np.savetxt(os.path.join(output, "nblr_pi1.csv"), pi1_hat.transpose(), delimiter=',')
-	np.savetxt(os.path.join(output, "nblr_mu.csv"), model.mu.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(output, "nblr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(output, "nblr_phi.csv"), model.phi.data.numpy().transpose(), delimiter=',')
-
 cli.add_command(train)
 cli.add_command(resume)
-cli.add_command(results)
 
 if __name__ == '__main__':
     cli()
