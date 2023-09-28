@@ -114,9 +114,13 @@ def run(state_dict, iterations, tol, lookback_iterations):
         'config': config
         }, os.path.join(output_path, 'checkpoint.pth'))
 
+	# Compute pi for each 
+	model.load_state_dict(curr_best_model_state)
+	pi, _ = model.predict(model.mu, model.beta, model.X)
 	np.savetxt(os.path.join(output_path, "nblr_mu.csv"), model.mu.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nblr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nblr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(output_path, "nblr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
 	
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
