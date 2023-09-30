@@ -2,8 +2,8 @@ import click
 import pandas as pd
 import numpy as np
 import torch
-from nblr.negbinomial_model import NegativeBinomialRegressionModel
-from nblr.utils import *
+from nbsr.negbinomial_model import NegativeBinomialRegressionModel
+from nbsr.utils import *
 import os
 import copy
 
@@ -117,13 +117,28 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	# Compute pi for each 
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.mu, model.beta, model.X)
-	np.savetxt(os.path.join(output_path, "nblr_mu.csv"), model.mu.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(output_path, "nblr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(output_path, "nblr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(output_path, "nblr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_mu.csv"), model.mu.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
 	
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
+
+def get_config(data_path, cols, learning_rate, lam, shape, scale, pivot):
+	config = {
+		"output_path": data_path,
+		"counts_path": os.path.join(data_path, "Y.csv"),
+		"coldata_path": os.path.join(data_path, "X.csv"),
+		"dispersion_path": os.path.join(data_path, "dispersion.csv"),
+		"column_names": cols,
+		"lr": learning_rate,
+		"lam": lam,
+		"shape": shape,
+		"scale": scale,
+		"pivot": pivot
+	}
+	return config
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
@@ -139,18 +154,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 def train(data_path, vars, iterations, learning_rate, lam, shape, scale, pivot, tol, lookback_iterations):
 	assert(len(vars) > 0)
 	cols = list(vars)
-	config = {
-		"output_path": data_path,
-		"counts_path": os.path.join(data_path, "Y.csv"),
-		"coldata_path": os.path.join(data_path, "X.csv"),
-		"dispersion_path": os.path.join(data_path, "dispersion.csv"),
-		"column_names": cols,
-		"lr": learning_rate,
-		"lam": lam,
-		"shape": shape,
-		"scale": scale,
-		"pivot": pivot
-	}
+	config = get_config(data_path, cols, learning_rate, lam, shape, scale, pivot)
 	state = {"config": config}
 	run(state, iterations, tol, lookback_iterations)
 
