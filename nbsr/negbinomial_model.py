@@ -76,6 +76,34 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_posterior = log_lik + log_prior1 + log_prior2
         return(log_posterior)
 
+    def log_lik_gradient(self, mu, beta):
+        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
+        dispersion = self.softplus(self.phi)
+        J = self.rna_count
+        log_unnorm_exp = mu + torch.matmul(self.X, beta_)
+        if self.pivot:
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
+        norm = torch.logsumexp(log_unnorm_exp, 1)
+        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
+
+        grad = torch.zeros(self.sample_count, self.dim * self.covariate_count)
+        for idx, (pi, x, y) in enumerate(zip(norm_expr, self.X, self.Y)):
+            s = torch.sum(y)
+            mean = s * pi
+            sigma2 = mean + dispersion * (mean ** 2)
+            p = mean / sigma2 # equivalent to r / (mu + r).
+            r = 1 / dispersion
+            A = torch.eye(J) - pi.repeat((J, 1))
+            A = A.transpose(0, 1)
+            temp1 = 1/mean - (1 + 2 * dispersion * mean)/sigma2
+            temp2 = 2/mean - (1 + 2 * dispersion * mean)/sigma2
+            temp = mean * (r * temp1 + y * temp2)
+            ret = x.repeat((J, 1)).transpose(0,1) * temp
+            ret2 = ret.unsqueeze(1).repeat(1, J, 1)
+            ret3 = ret2 * A
+            grad[idx,:] = torch.sum(ret3, 2).flatten()
+        return torch.sum(grad, 0)
+
     def predict(self, mu, beta, X):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         log_unnorm_exp = mu + torch.matmul(self.X, beta_)
