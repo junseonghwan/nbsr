@@ -39,7 +39,7 @@ def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	best_model_state = None
 	best_loss = torch.inf
 	for i in range(iterations):
-		loss = -model.log_posterior(model.mu, model.beta)
+		loss = -model.log_posterior(model.beta)
 		optimizer.zero_grad()
 		loss.backward(retain_graph=True)
 		optimizer.step()
@@ -116,8 +116,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 
 	# Compute pi for each 
 	model.load_state_dict(curr_best_model_state)
-	pi, _ = model.predict(model.mu, model.beta, model.X)
-	np.savetxt(os.path.join(output_path, "nbsr_mu.csv"), model.mu.data.numpy().transpose(), delimiter=',')
+	pi, _ = model.predict(model.beta, model.X)
 	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
