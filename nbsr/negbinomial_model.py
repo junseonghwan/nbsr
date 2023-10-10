@@ -10,7 +10,7 @@ import time
 from nbsr.distributions import log_negbinomial, log_gamma, log_normal, log_invgamma, softplus_inv
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
-    def __init__(self, X, Y, dispersion=None, pivot=True):
+    def __init__(self, X, Y, dispersion=None, pivot=False):
         super(NegativeBinomialRegressionModel, self).__init__()
         # Assume X is a pandas dataframe.
         assert(isinstance(X, pd.DataFrame))
@@ -123,11 +123,12 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             r = 1 / dispersion
             A = torch.eye(J) - pi.repeat((J, 1))
             A = A.transpose(0, 1)
-            temp1 = 1/mean - (1 + 2 * dispersion * mean)/sigma2
-            temp2 = 2/mean - (1 + 2 * dispersion * mean)/sigma2
+            temp0 = (1 + 2 * dispersion * mean)/sigma2
+            temp1 = 1/mean - temp0
+            temp2 = 2/mean - temp0
             temp = mean * (r * temp1 + y * temp2)
-            ret = x.repeat((J, 1)).transpose(0,1) * temp
-            ret2 = ret.unsqueeze(1).repeat(1, J, 1)
+            ret1 = x.repeat((J, 1)).transpose(0,1) * temp
+            ret2 = ret1.unsqueeze(1).repeat(1, J, 1)
             ret3 = ret2 * A
             grad[idx,:] = torch.sum(ret3, 2).flatten()
         return grad

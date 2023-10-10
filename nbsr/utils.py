@@ -3,6 +3,9 @@ import torch
 from scipy.special import logsumexp
 import pandas as pd
 
+def softplus(x):
+    return np.log1p(np.exp(x))
+
 def reshape(model, params):
     return(params.reshape((model.X.shape[1], model.dim)))
 
