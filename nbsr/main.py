@@ -134,7 +134,7 @@ def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 		optimizer.zero_grad()
 		loss.backward(retain_graph=True)
 		optimizer.step()
-		loss_history.append(loss.data.numpy()[0])
+		loss_history.append(loss.data.numpy())
 		if loss.data < best_loss:
 			best_model_state = copy.deepcopy(model.state_dict())
 			best_loss = loss.data
