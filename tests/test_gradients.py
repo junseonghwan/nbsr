@@ -67,6 +67,54 @@ class TestNegBinModel(unittest.TestCase):
         print(grad_actual) 
         self.assertTrue(np.allclose(grad_expected, grad_actual))
 
+    def test_log_beta_prior_gradient(self):
+        d = 3
+        N = 20
+        J = 5
+        (Y, X, phi) = generate_data(d, N, J)
+
+        print("Test gradient of log prior over beta...")
+        Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+        X_df = pd.DataFrame(X)
+        model = nbm.NegativeBinomialRegressionModel(X_df, Y_df, dispersion = phi, pivot=False)
+        model.specify_beta_prior(1, 3, 2)
+        z = model.log_beta_prior(model.beta)
+        if model.beta.grad is not None:
+            model.beta.grad.zero_()
+        z.backward(retain_graph=True)
+        grad_expected = model.beta.grad.data.numpy()
+        grad_actual = model.log_beta_prior_gradient(model.beta).data.numpy()
+        print(grad_expected)
+        print(grad_actual)
+        self.assertTrue(np.allclose(grad_expected, grad_actual))
+
+    def test_log_posterior_gradient(self):
+        d = 3
+        N = 20
+        J = 5
+        (Y, X, phi) = generate_data(d, N, J)
+
+        print("Test log posterior gradient")
+        Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+        X_df = pd.DataFrame(X)
+        model = nbm.NegativeBinomialRegressionModel(X_df, Y_df, dispersion = phi, pivot=False)
+        model.specify_beta_prior(1, 3, 2)
+        z = model.log_posterior(model.beta)
+        if model.beta.grad is not None:
+            model.beta.grad.zero_()
+        z.backward(retain_graph=True)
+        grad_expected = model.beta.grad.data.numpy()
+        grad_actual = model.log_posterior_gradient(model.beta, tensorized=False).data.numpy()
+
+        # log_lik_grad = model.log_lik_gradient(model.beta)
+        # log_prior_grad = model.log_beta_prior_gradient(model.beta)
+        # print(log_lik_grad)
+        # print(log_prior_grad)
+
+        print(grad_expected)
+        print(grad_actual)
+        self.assertTrue(np.allclose(grad_expected, grad_actual))
+
     def test_log_lik_hessian(self):
         d = 3
         N = 20

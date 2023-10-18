@@ -34,7 +34,7 @@ def log_invgamma(x, alpha, beta):
 def log_normal(x, mu, std):
     """Compute the log pdf of x,
     under a lognormal distribution with mean mu and standard deviation std."""
-    return -0.5 * torch.log(2*torch.pi*(std**2)) - (0.5 * (1/(std**2)) * (x-mu)**2)
+    return -0.5 * torch.log(2*torch.pi*(std**2)) - (0.5 * ((x-mu)/std)**2)
 
 def softplus_inv(y):
     return y + y.neg().expm1().neg().log()
