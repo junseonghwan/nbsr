@@ -38,7 +38,30 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         else:
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
         self.psi = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
- 
+
+        self.I = None
+
+    def compute_observed_information(self, recompute=True):
+        if self.I is not None and not recompute:
+            return self.I
+        
+        log_post_grad = self.log_posterior_gradient(self.beta)
+        gradient_matrix = torch.zeros(log_post_grad.size(0), self.beta.size(0))
+        # Compute the gradient for each component of log_post_grad w.r.t. beta
+        for k in range(log_post_grad.size(0)):
+            # Zero previous gradient
+            if self.beta.grad is not None:
+                self.beta.grad.zero_()
+
+            # Backward on the k-th component of y
+            log_post_grad[k].backward(retain_graph=True)
+
+            # Store the gradient
+            gradient_matrix[k,:] = self.beta.grad
+
+        self.I = -gradient_matrix
+        return self.I
+
     def specify_beta_prior(self, lam, beta_var_shape, beta_var_scale):
         self.lam = torch.tensor(lam, requires_grad=False)
         self.beta_var_shape = torch.tensor(beta_var_shape, requires_grad=False)
@@ -208,7 +231,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_prior_grad = self.log_beta_prior_gradient(beta)
         log_lik_grad = self.log_lik_gradient(beta, tensorized)
         return log_lik_grad + log_prior_grad
-
+    
     def log_lik_hessian_persample(self, beta):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         dispersion = self.softplus(self.phi)
@@ -259,7 +282,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
 
     def predict(self, beta, X):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-        log_unnorm_exp = torch.matmul(self.X, beta_)
+        log_unnorm_exp = torch.matmul(X, beta_)
         if self.pivot:
             log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
         norm = torch.logsumexp(log_unnorm_exp, 1)
