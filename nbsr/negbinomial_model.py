@@ -15,6 +15,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         # Assume X is a pandas dataframe.
         assert(isinstance(X, pd.DataFrame))
         assert(isinstance(Y, pd.DataFrame))
+        self.hessian = None
         self.X_df = X
         self.Y_df = Y
         self.XX = torch.tensor(pd.get_dummies(X, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
@@ -39,11 +40,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
         self.psi = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
 
-        self.I = None
-
     def compute_observed_information(self, recompute=True):
-        if self.I is not None and not recompute:
-            return self.I
+        if self.hessian is not None and not recompute:
+            return self.hessian
         
         log_post_grad = self.log_posterior_gradient(self.beta)
         gradient_matrix = torch.zeros(log_post_grad.size(0), self.beta.size(0))
@@ -59,8 +58,8 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             # Store the gradient
             gradient_matrix[k,:] = self.beta.grad
 
-        self.I = -gradient_matrix
-        return self.I
+        self.hessian = -gradient_matrix
+        return self.hessian
 
     def specify_beta_prior(self, lam, beta_var_shape, beta_var_scale):
         self.lam = torch.tensor(lam, requires_grad=False)

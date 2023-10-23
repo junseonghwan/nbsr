@@ -35,7 +35,7 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 		print(f"Not converged")
 		return False	
 
-def inference(model, var, w1, w0):
+def inference_beta(model, var, w1, w0):
 	"""
 	Compute inference statistics for contrasting two levels for a given variable of interest.
 	Note: typically w0 should correspond to the baseline corresponding to control while w1 the treatment level.
@@ -82,8 +82,6 @@ def inference(model, var, w1, w0):
 	colnames = X_df.columns.values
 	col_idx0 = np.where(colnames == var_level0)[0]
 	col_idx1 = np.where(colnames == var_level1)[0]
-	beta_ = model.beta.reshape(model.dim, model.covariate_count)
-	contrast = torch.zeros_like(beta_)
 	found = False
 	if len(col_idx0) > 0:
 		# Offset by 1 because the first column is the intercept.
@@ -120,9 +118,9 @@ def inference(model, var, w1, w0):
 	res["pvalue"] = 2 * scipy.stats.norm.cdf(-np.abs(res["stat"]))
 	# Sixth column is the Benjamini-Hochberg adjusted p-value.
 	res["adjPValue"] = false_discovery_control(res["pvalue"], method="bh")
-	return res
+	return (res, I)
 
-def inference2(model, var, w1, w0):
+def inference_logRR(model, var, w1, w0):
 	I = model.compute_observed_information(recompute=False)
 	S = torch.linalg.pinv(I)
 
@@ -179,7 +177,7 @@ def inference2(model, var, w1, w0):
 
 	logFC = logRRi.data.numpy()
 	std_err = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
-	return (logFC, std_err)
+	return (logFC, std_err, I)
 
 def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	# Fit the model.
@@ -222,26 +220,32 @@ def construct_model(config):
 	print(model.X.dtype, model.Y.dtype)
 	return model
 
+def load_model_from_state_dict(state_dict, config):
+    model = construct_model(config)
+    checkpoint = None
+    if model_state_key in state_dict:
+        checkpoint = state_dict[model_state_key]
+        model.load_state_dict(checkpoint['model_state_dict'])
+    return model, checkpoint
+
 def run(state_dict, iterations, tol, lookback_iterations):
 	config = state_dict["config"]
 	output_path = config["output_path"]
-	if not os.path.exists(output_path):
-		os.makedirs(output_path)
+	create_directory(output_path)
 
-	model = construct_model(config)
-	if model_state_key in state_dict:
-		checkpoint = state_dict[model_state_key]
-		model.load_state_dict(checkpoint['model_state_dict'])
+	model, checkpoint = load_model_from_state_dict(state_dict, config)
+
+	if checkpoint:
 		optimizer = torch.optim.Adam(model.parameters())
 		optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 		curr_loss_history = checkpoint['loss']
 		curr_best_loss = checkpoint['best_loss']
-		curr_best_state = checkpoint['best_model_state_dict']
+		curr_best_model_state = checkpoint['best_model_state_dict']
 	else:
 		optimizer = torch.optim.Adam(model.parameters(),lr=config["lr"])
 		curr_loss_history = []
 		curr_best_loss = torch.inf
-		curr_best_state = None
+		curr_best_model_state = None
 
 	loss_history, best_model_state, best_loss, converged = fit_posterior(model, optimizer, iterations, tol, lookback_iterations)
 	curr_loss_history.extend(loss_history)
@@ -262,7 +266,6 @@ def run(state_dict, iterations, tol, lookback_iterations):
         'config': config
         }, os.path.join(output_path, 'checkpoint.pth'))
 
-	# Compute pi for each 
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.beta, model.X)
 	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
@@ -311,11 +314,40 @@ def train(data_path, vars, iterations, learning_rate, lam, shape, scale, pivot, 
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
 def resume(checkpoint_path, iterations, tol, lookback_iterations):
-	checkpoint = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
-	run(checkpoint, iterations, tol, lookback_iterations)
+	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
+	run(state_dict, iterations, tol, lookback_iterations)
+
+@click.command()
+@click.argument('checkpoint_path', type=click.Path(exists=True))
+@click.argument('var', type=str)
+@click.argument('w1', type=str)
+@click.argument('w0', type=str)
+def results(checkpoint_path, var, w1, w0):
+	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
+	config = state_dict["config"]
+	output_path = config["output_path"]
+	create_directory(output_path)
+
+	model, _ = load_model_from_state_dict(state_dict, config)
+
+	# Check if hessian matrix exists.
+	# Load it and set it as the observed information matrix on model.
+	if os.path.exists(os.path.join(output_path, "hessian.csv")):
+		hessian = np.loadtxt(os.path.join(output_path, "hessian.csv"), delimiter=',')
+		model.hessian = torch.from_numpy(hessian).double()
+
+	res_beta, hessian = inference_beta(model, var, w1, w0)
+	logRR, logRR_std, _  = inference_logRR(model, var, w1, w0)
+
+	res_beta.to_csv(os.path.join(output_path, "nbsr_results.csv"), index=False)
+	if not os.path.exists(os.path.join(output_path, "hessian.csv")):
+		np.savetxt(os.path.join(output_path, "hessian.csv"), hessian, delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_logRR.csv"), logRR, delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(train)
 cli.add_command(resume)
+cli.add_command(results)
 
 if __name__ == '__main__':
     cli()
