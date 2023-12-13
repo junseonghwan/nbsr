@@ -10,23 +10,28 @@ import time
 from nbsr.distributions import log_negbinomial, log_gamma, log_normal, log_invgamma, softplus_inv
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
-    def __init__(self, X, Y, dispersion=None, pivot=False):
+    def __init__(self, X, Y, dispersion=None, prior_sd=None, pivot=False):
         super(NegativeBinomialRegressionModel, self).__init__()
         # Assume X is a pandas dataframe.
-        assert(isinstance(X, pd.DataFrame))
-        assert(isinstance(Y, pd.DataFrame))
-        self.hessian = None
-        self.X_df = X
-        self.Y_df = Y
-        self.XX = torch.tensor(pd.get_dummies(X, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
-        self.Y = torch.tensor(Y.transpose().to_numpy(), dtype=torch.float64)
+        #assert(isinstance(X, pd.DataFrame))
+        #assert(isinstance(Y, pd.DataFrame))
+        #self.X_df = X
+        #self.Y_df = Y
+        #self.XX = torch.tensor(pd.get_dummies(X, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
+        #self.Y = torch.tensor(Y.transpose().to_numpy(), dtype=torch.float64)
+        assert(isinstance(X, torch.Tensor))
+        assert(isinstance(Y, torch.Tensor))
+        self.X = X
+        self.Y = Y
         self.pivot = pivot
         self.softplus = torch.nn.Softplus()
         self.sample_count = self.Y.shape[0]
-        self.covariate_count = self.XX.shape[1] + 1 # +1 for the intercept term.
+        #self.covariate_count = self.XX.shape[1] + 1 # +1 for the intercept term.
+        self.covariate_count = self.X.shape[1]
         self.rna_count = self.Y.shape[1]
         self.converged = False
-        self.X = torch.cat([torch.ones(self.sample_count, 1), self.XX], dim = 1)
+        self.hessian = None
+        #self.X = torch.cat([torch.ones(self.sample_count, 1), self.XX], dim = 1)
         print("RNA count:", self.rna_count)
         print("Sample count:", self.sample_count)
         print("Covariate count:", self.covariate_count)
@@ -38,12 +43,16 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
-        self.psi = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
+        if prior_sd is None:
+            self.psi = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
+        else:
+            self.psi = torch.nn.Parameter(softplus_inv(torch.tensor(prior_sd)), requires_grad=False)
 
     def compute_observed_information(self, recompute=True):
         if self.hessian is not None and not recompute:
             return self.hessian
         
+        print("Computeing Hessian...")
         log_post_grad = self.log_posterior_gradient(self.beta)
         gradient_matrix = torch.zeros(log_post_grad.size(0), self.beta.size(0))
         # Compute the gradient for each component of log_post_grad w.r.t. beta
@@ -65,8 +74,10 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         self.lam = torch.tensor(lam, requires_grad=False)
         self.beta_var_shape = torch.tensor(beta_var_shape, requires_grad=False)
         self.beta_var_scale = torch.tensor(beta_var_scale, requires_grad=False)
+        # Sample from prior to initialize standard deviation.
         sd = np.sqrt(invgamma.rvs(a=self.beta_var_shape, scale=self.beta_var_scale, size=self.covariate_count))
         print("Initial sd:", sd)
+        # We will optimize psi: sd = softplus(psi).
         self.psi = torch.nn.Parameter(softplus_inv(torch.tensor(sd)), requires_grad=True)
         print("Initial psi:", self.psi)
         #self.psi = softplus_inv(torch.tensor(invgamma.rvs(self.beta_var_shape, self.beta_var_scale, size=self.covariate_count+1)))
@@ -114,10 +125,10 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             torch.Tensor: A scalar tensor representing the log posterior probability.
         """
         log_lik = self.log_likelihood(beta)
-        # normal prior on beta -- 0 mean and var given as input from glmGamPoi.
         sd = self.softplus(self.psi)
-        beta_ = beta.reshape(self.dim, self.covariate_count)
+        # normal prior on beta -- 0 mean and sd = softplus(psi).
         log_prior1 = self.log_beta_prior(beta)
+        # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
         log_prior2 = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
         log_posterior = log_lik + log_prior1 + log_prior2
         return(log_posterior)

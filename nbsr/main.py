@@ -1,5 +1,6 @@
 import os
 import copy
+import sys
 
 import click
 import pandas as pd
@@ -117,7 +118,7 @@ def inference_beta(model, var, w1, w0):
 	# Fifth column is the p-value.
 	res["pvalue"] = 2 * scipy.stats.norm.cdf(-np.abs(res["stat"]))
 	# Sixth column is the Benjamini-Hochberg adjusted p-value.
-	res["adjPValue"] = false_discovery_control(res["pvalue"], method="bh")
+	#res["adjPValue"] = false_discovery_control(res["pvalue"], method="bh")
 	return (res, I)
 
 def inference_logRR(model, var, w1, w0):
@@ -187,6 +188,7 @@ def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	best_loss = torch.inf
 	for i in range(iterations):
 		loss = -model.log_posterior(model.beta)
+		#loss = -model.log_likelihood(model.beta)
 		optimizer.zero_grad()
 		loss.backward(retain_graph=True)
 		optimizer.step()
@@ -202,18 +204,49 @@ def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	converged = assess_convergence(loss_history, tol, lookback_iterations)
 	return (loss_history, best_model_state, best_loss, converged)
 
+def construct_tensor_from_coldata(coldata_pd, column_names, sample_count):
+	X_tensor = torch.ones(sample_count, 1)
+	# column data does not exist -> fit a model with just the intercept.
+	if coldata_pd is None:
+		return X_tensor
+
+	# column data exists -> check that the column names specified in the config exists in the column data.
+	# if no, exit with error.
+	# if yes, retrieve the relevant column data and convert to dummy variables and return a tensor with intercept term prepended.
+	X_df_names = coldata_pd.columns.to_list()
+	for column_name in column_names:
+		exists = column_name in X_df_names
+		print("Column name " + column_name + " exists? " + str(exists))
+		if not exists:
+			print(column_name + " does not exist in the data frame.")
+			sys.exit(1)
+	X_df = coldata_pd[column_names]
+	if X_df.shape[1] > 0:
+		X_tensor = torch.cat([X_tensor, torch.tensor(pd.get_dummies(X_df, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)], dim = 1)
+	return X_tensor
+
 def construct_model(config):
 	click.echo(config)
 	counts_pd = pd.read_csv(config["counts_path"])
-	coldata_pd = pd.read_csv(config["coldata_path"], na_filter=False)
+	if os.path.exists(config["coldata_path"]):
+		coldata_pd = pd.read_csv(config["coldata_path"], na_filter=False)
+	else:
+		coldata_pd = None
+	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
+	X = construct_tensor_from_coldata(coldata_pd, config["column_names"], counts_pd.shape[1])
 	dispersion = np.loadtxt(config["dispersion_path"])
+	prior_sd = read_file_if_exists(config["prior_sd_path"])
 
-	print("Y: ", counts_pd.shape)
-	X = coldata_pd[config["column_names"]]
+	print("Y: ", Y.shape)
 	print("X: ", X.shape)
-	print("dispersion: ", dispersion.shape)
 
-	model = NegativeBinomialRegressionModel(X, counts_pd, dispersion=dispersion, pivot=config["pivot"])
+	print("dispersion: ", dispersion.shape)
+	if prior_sd is not None:
+		print("prior_sd: ", prior_sd.shape)
+	else:
+		print("prior_sd: unspecified")
+
+	model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 
 	print(torch.get_default_dtype())
@@ -224,6 +257,7 @@ def load_model_from_state_dict(state_dict, config):
     model = construct_model(config)
     checkpoint = None
     if model_state_key in state_dict:
+        print("Loading previously saved model...")
         checkpoint = state_dict[model_state_key]
         model.load_state_dict(checkpoint['model_state_dict'])
     return model, checkpoint
@@ -281,6 +315,7 @@ def get_config(data_path, cols, learning_rate, lam, shape, scale, pivot):
 		"counts_path": os.path.join(data_path, "Y.csv"),
 		"coldata_path": os.path.join(data_path, "X.csv"),
 		"dispersion_path": os.path.join(data_path, "dispersion.csv"),
+		"prior_sd_path": os.path.join(data_path, "prior_sd.csv"),
 		"column_names": cols,
 		"lr": learning_rate,
 		"lam": lam,
@@ -322,7 +357,8 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.argument('var', type=str)
 @click.argument('w1', type=str)
 @click.argument('w0', type=str)
-def results(checkpoint_path, var, w1, w0):
+@click.option('--recompute_hessian', default=False, type=bool)
+def results(checkpoint_path, var, w1, w0, recompute_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
 	config = state_dict["config"]
 	output_path = config["output_path"]
@@ -332,7 +368,7 @@ def results(checkpoint_path, var, w1, w0):
 
 	# Check if hessian matrix exists.
 	# Load it and set it as the observed information matrix on model.
-	if os.path.exists(os.path.join(output_path, "hessian.csv")):
+	if not recompute_hessian and os.path.exists(os.path.join(output_path, "hessian.csv")):
 		hessian = np.loadtxt(os.path.join(output_path, "hessian.csv"), delimiter=',')
 		model.hessian = torch.from_numpy(hessian).double()
 

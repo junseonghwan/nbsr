@@ -4,6 +4,14 @@ from scipy.special import logsumexp
 import pandas as pd
 import os
 
+def torch_rbf(x, a, b, c):
+    return torch.sum(a*torch.exp(-b*(x - c)))
+
+def read_file_if_exists(file_path):
+    if os.path.exists(file_path):
+        return np.loadtxt(file_path)
+    return None
+
 def create_directory(path):
     if not os.path.exists(path):
     	os.makedirs(path)
