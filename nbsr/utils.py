@@ -5,7 +5,24 @@ import pandas as pd
 import os
 
 def torch_rbf(x, a, b, c):
-    return torch.sum(a*torch.exp(-b*(x - c)))
+    # Ensuring x is a tensor
+    if not torch.is_tensor(x):
+        x = torch.tensor(x, dtype=torch.float32)
+
+    # Reshape x to have three dimensions if it's not already
+    if x.dim() == 1:
+        x = x.unsqueeze(1)  # For a vector, make it N x 1
+    x = x.unsqueeze(-1)  # Add an extra dimension for broadcasting: N x K x 1
+
+    # a and c are vectors of length M. Reshape for broadcasting
+    a = a.reshape(1, 1, -1)  # 1 x 1 x M
+    c = c.reshape(1, 1, -1)  # 1 x 1 x M
+
+    # Perform the operation
+    # Broadcasting will align dimensions automatically
+    result = torch.sum(a * torch.exp(-b * (x - c)**2), dim=-1)  # Sum over the last dimension
+
+    return result
 
 def read_file_if_exists(file_path):
     if os.path.exists(file_path):
