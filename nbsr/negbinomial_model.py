@@ -11,14 +11,7 @@ from nbsr.distributions import log_negbinomial, log_gamma, log_normal, log_invga
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
     def __init__(self, X, Y, dispersion=None, prior_sd=None, pivot=False):
-        super(NegativeBinomialRegressionModel, self).__init__()
-        # Assume X is a pandas dataframe.
-        #assert(isinstance(X, pd.DataFrame))
-        #assert(isinstance(Y, pd.DataFrame))
-        #self.X_df = X
-        #self.Y_df = Y
-        #self.XX = torch.tensor(pd.get_dummies(X, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
-        #self.Y = torch.tensor(Y.transpose().to_numpy(), dtype=torch.float64)
+        super().__init__()
         assert(isinstance(X, torch.Tensor))
         assert(isinstance(Y, torch.Tensor))
         self.X = X

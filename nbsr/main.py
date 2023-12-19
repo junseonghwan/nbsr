@@ -9,6 +9,7 @@ import scipy
 import torch
 
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
+#from nbsr.nbsr_rbf import NegativeBinomialRegressionModelRBF
 from nbsr.utils import *
 
 torch.set_default_dtype(torch.float64)
@@ -204,11 +205,11 @@ def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	converged = assess_convergence(loss_history, tol, lookback_iterations)
 	return (loss_history, best_model_state, best_loss, converged)
 
-def construct_tensor_from_coldata(coldata_pd, column_names, sample_count):
-	X_tensor = torch.ones(sample_count, 1)
+def construct_tensor_from_coldata(coldata_pd, column_names, sample_count, include_intercept=True):
+	X_intercept = torch.ones(sample_count, 1)
 	# column data does not exist -> fit a model with just the intercept.
-	if coldata_pd is None:
-		return X_tensor
+	if coldata_pd is None or len(column_names) == 0:
+		return X_intercept
 
 	# column data exists -> check that the column names specified in the config exists in the column data.
 	# if no, exit with error.
@@ -221,8 +222,11 @@ def construct_tensor_from_coldata(coldata_pd, column_names, sample_count):
 			print(column_name + " does not exist in the data frame.")
 			sys.exit(1)
 	X_df = coldata_pd[column_names]
-	if X_df.shape[1] > 0:
-		X_tensor = torch.cat([X_tensor, torch.tensor(pd.get_dummies(X_df, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)], dim = 1)
+	#if X_df.shape[1] > 0:
+	#	X_tensor = torch.tensor(pd.get_dummies(X_df, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
+	X_tensor = torch.tensor(pd.get_dummies(X_df, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
+	if include_intercept:
+		X_tensor = torch.cat([X_intercept, X_tensor], dim = 1)
 	return X_tensor
 
 def construct_model(config):
@@ -234,19 +238,24 @@ def construct_model(config):
 		coldata_pd = None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
 	X = construct_tensor_from_coldata(coldata_pd, config["column_names"], counts_pd.shape[1])
-	dispersion = np.loadtxt(config["dispersion_path"])
+	dispersion = read_file_if_exists(config["dispersion_path"])
 	prior_sd = read_file_if_exists(config["prior_sd_path"])
+	knot_count = config["knot_count"]
 
 	print("Y: ", Y.shape)
 	print("X: ", X.shape)
 
-	print("dispersion: ", dispersion.shape)
+	if dispersion is not None:
+		print("dispersion: ", dispersion.shape)
+	else:
+		print("dispersion unspecified and will be estimated.")
 	if prior_sd is not None:
 		print("prior_sd: ", prior_sd.shape)
 	else:
-		print("prior_sd: unspecified")
+		print("prior_sd unspecified and will be estimated.")
 
 	model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
+	#model = NegativeBinomialRegressionModelRBF(X, Y, knot_count=knot_count, pivot=config["pivot"])
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 
 	print(torch.get_default_dtype())
@@ -302,14 +311,17 @@ def run(state_dict, iterations, tol, lookback_iterations):
 
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.beta, model.X)
+	phi = model.softplus(model.phi)
+
 	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
 	
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
 
-def get_config(data_path, cols, learning_rate, lam, shape, scale, pivot):
+def get_config(data_path, cols, learning_rate, lam, shape, scale, knot_count, pivot):
 	config = {
 		"output_path": data_path,
 		"counts_path": os.path.join(data_path, "Y.csv"),
@@ -321,6 +333,7 @@ def get_config(data_path, cols, learning_rate, lam, shape, scale, pivot):
 		"lam": lam,
 		"shape": shape,
 		"scale": scale,
+		"knot_count": knot_count,
 		"pivot": pivot
 	}
 	return config
@@ -333,13 +346,14 @@ def get_config(data_path, cols, learning_rate, lam, shape, scale, pivot):
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
+@click.option('--knot_count', default=20, type=int)
 @click.option('--pivot', default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, learning_rate, lam, shape, scale, pivot, tol, lookback_iterations):
-	assert(len(vars) > 0)
+def train(data_path, vars, iterations, learning_rate, lam, shape, scale, knot_count, pivot, tol, lookback_iterations):
+	#assert(len(vars) > 0)
 	cols = list(vars)
-	config = get_config(data_path, cols, learning_rate, lam, shape, scale, pivot)
+	config = get_config(data_path, cols, learning_rate, lam, shape, scale, knot_count, pivot)
 	state = {"config": config}
 	run(state, iterations, tol, lookback_iterations)
 
