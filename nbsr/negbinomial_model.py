@@ -16,6 +16,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         assert(isinstance(Y, torch.Tensor))
         self.X = X
         self.Y = Y
+        self.s = torch.sum(self.Y, dim=1)  # Summing over rows
         self.pivot = pivot
         self.softplus = torch.nn.Softplus()
         self.sample_count = self.Y.shape[0]
@@ -93,8 +94,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             norm = torch.logsumexp(log_unnorm_exp, 1)
             norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
             
-            s = torch.sum(self.Y, dim=1)  # Summing over rows
-            log_lik_vals = log_negbinomial(self.Y, s[:, None] * norm_expr, self.softplus(self.phi))
+            log_lik_vals = log_negbinomial(self.Y, self.s[:, None] * norm_expr, self.softplus(self.phi))
             log_lik = torch.sum(log_lik_vals)  # Sum all values
 
             return(log_lik)
@@ -179,8 +179,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         norm = torch.logsumexp(log_unnorm_exp, 1)
         norm_expr = torch.exp(log_unnorm_exp - norm[:, None])
 
-        s = torch.sum(self.Y, dim=1)
-        mean = s[:, None] * norm_expr
+        mean = self.s[:, None] * norm_expr
         sigma2 = mean + dispersion * (mean ** 2)
         r = 1 / dispersion
         D = dispersion * (mean ** 2) / sigma2

@@ -9,15 +9,18 @@ import time
 
 from nbsr.distributions import log_negbinomial, log_gamma, log_normal, log_invgamma, softplus_inv
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
+from nbsr.grbf import GaussianRBF
 
 class ZINBSR(NegativeBinomialRegressionModel):
-    def __init__(self, X, Y, Z, dispersion=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, Z, dispersion=None, knots=10, prior_sd=None, pivot=False):
         super().__init__(X, Y, dispersion, prior_sd, pivot)
         # Z is a tensor storing the covariates to be used in predicting zero inflation.
         assert(isinstance(Z, torch.Tensor))
         self.Z = Z
         self.b = torch.nn.Parameter(torch.randn(self.Z.shape[1], dtype=torch.float64), requires_grad=True)
-        print(self.b)
+        self.grbf = None
+        if dispersion is None:
+            self.grbf = GaussianRBF(0, torch.max(torch.log(Y)), knots)           
 
     def log_likelihood(self):
         beta_ = torch.reshape(self.beta, (self.covariate_count, self.dim))
@@ -26,9 +29,13 @@ class ZINBSR(NegativeBinomialRegressionModel):
             log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
         norm = torch.logsumexp(log_unnorm_exp, 1)
         norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        
-        s = torch.sum(self.Y, dim=1)  # Summing over rows
-        log_lik_vals = log_negbinomial(self.Y, s[:, None] * norm_expr, self.softplus(self.phi))
+        mu = self.s[:, None] * norm_expr
+
+        if self.grbf is not None:
+            dispersion = self.grbf.evaluate(mu)
+            log_lik_vals = log_negbinomial(self.Y, mu, dispersion)
+        else:
+            log_lik_vals = log_negbinomial(self.Y, mu, self.softplus(self.phi))
 
         # compute epsilon.
         Zb = torch.matmul(self.Z, self.b)
@@ -53,4 +60,3 @@ class ZINBSR(NegativeBinomialRegressionModel):
         log_prior3 = torch.sum(log_normal(self.b, torch.zeros_like(self.b), torch.tensor(1.0)))
         log_posterior = log_lik + log_prior1 + log_prior2 + log_prior3
         return(log_posterior)
-
