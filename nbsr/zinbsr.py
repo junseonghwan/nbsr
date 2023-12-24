@@ -12,15 +12,13 @@ from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.grbf import GaussianRBF
 
 class ZINBSR(NegativeBinomialRegressionModel):
-    def __init__(self, X, Y, Z, dispersion=None, knots=10, prior_sd=None, pivot=False):
-        super().__init__(X, Y, dispersion, prior_sd, pivot)
+    def __init__(self, X, Y, Z, knot_count=10, prior_sd=None, pivot=False):
+        super().__init__(X, Y, None, prior_sd, pivot)
         # Z is a tensor storing the covariates to be used in predicting zero inflation.
         assert(isinstance(Z, torch.Tensor))
         self.Z = Z
         self.b = torch.nn.Parameter(torch.randn(self.Z.shape[1], dtype=torch.float64), requires_grad=True)
-        self.grbf = None
-        if dispersion is None:
-            self.grbf = GaussianRBF(0, torch.max(torch.log(Y)), knots)           
+        self.grbf = GaussianRBF(0, torch.max(torch.log(Y)), knot_count)
 
     def log_likelihood(self):
         beta_ = torch.reshape(self.beta, (self.covariate_count, self.dim))
