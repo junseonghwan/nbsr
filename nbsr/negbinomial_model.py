@@ -33,6 +33,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         # The parameters we adjust during training.
         self.dim = self.rna_count - 1 if pivot else self.rna_count
         self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
+        self.grbf = None
         if dispersion is None:
             self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
@@ -40,29 +41,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         if prior_sd is None:
             self.psi = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
         else:
-            self.psi = torch.nn.Parameter(softplus_inv(torch.tensor(prior_sd)), requires_grad=False)
-
-    def compute_observed_information(self, recompute=True):
-        if self.hessian is not None and not recompute:
-            return self.hessian
-        
-        print("Computeing Hessian...")
-        log_post_grad = self.log_posterior_gradient(self.beta)
-        gradient_matrix = torch.zeros(log_post_grad.size(0), self.beta.size(0))
-        # Compute the gradient for each component of log_post_grad w.r.t. beta
-        for k in range(log_post_grad.size(0)):
-            # Zero previous gradient
-            if self.beta.grad is not None:
-                self.beta.grad.zero_()
-
-            # Backward on the k-th component of y
-            log_post_grad[k].backward(retain_graph=True)
-
-            # Store the gradient
-            gradient_matrix[k,:] = self.beta.grad
-
-        self.hessian = -gradient_matrix
-        return self.hessian
+            self.psi = softplus_inv(torch.tensor(prior_sd))
 
     def specify_beta_prior(self, lam, beta_var_shape, beta_var_scale):
         self.lam = torch.tensor(lam, requires_grad=False)
@@ -291,6 +270,28 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
         pi = norm_expr
         return(pi, log_unnorm_exp)
+
+    def compute_observed_information(self, recompute=True):
+        if self.hessian is not None and not recompute:
+            return self.hessian
+        
+        print("Computeing Hessian...")
+        log_post_grad = self.log_posterior_gradient(self.beta)
+        gradient_matrix = torch.zeros(log_post_grad.size(0), self.beta.size(0))
+        # Compute the gradient for each component of log_post_grad w.r.t. beta
+        for k in range(log_post_grad.size(0)):
+            # Zero previous gradient
+            if self.beta.grad is not None:
+                self.beta.grad.zero_()
+
+            # Backward on the k-th component of y
+            log_post_grad[k].backward(retain_graph=True)
+
+            # Store the gradient
+            gradient_matrix[k,:] = self.beta.grad
+
+        self.hessian = -gradient_matrix
+        return self.hessian
 
 
 

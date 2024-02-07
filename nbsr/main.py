@@ -189,15 +189,16 @@ def fit_posterior(model, optimizer, optimizer_grbf, iterations, tol, lookback_it
 	best_loss = torch.inf
 	for i in range(iterations):
 
-		loss = -model.log_posterior()
+		loss = -model.log_posterior(model.beta)
 		optimizer.zero_grad()
 		loss.backward(retain_graph=True)
 		optimizer.step()
 
-		loss = -model.log_posterior()
-		optimizer_grbf.zero_grad()
-		loss.backward()
-		optimizer_grbf.step()
+		if optimizer_grbf is not None:
+			loss = -model.log_posterior(model.beta)
+			optimizer_grbf.zero_grad()
+			loss.backward()
+			optimizer_grbf.step()
 
 		loss_history.append(loss.data.numpy())
 		if loss.data < best_loss:
@@ -215,7 +216,10 @@ def construct_tensor_from_coldata(coldata_pd, column_names, sample_count, includ
 	X_intercept = torch.ones(sample_count, 1)
 	# column data does not exist -> fit a model with just the intercept.
 	if coldata_pd is None or len(column_names) == 0:
-		return X_intercept
+		if include_intercept:
+			return X_intercept
+		else:
+			return None
 
 	# column data exists -> check that the column names specified in the config exists in the column data.
 	# if no, exit with error.
@@ -251,7 +255,8 @@ def construct_model(config):
 
 	print("Y: ", Y.shape)
 	print("X: ", X.shape)
-	print("Z: ", Z.shape)
+	if Z is not None:
+		print("Z: ", Z.shape)
 
 	if dispersion is not None:
 		print("dispersion: ", dispersion.shape)
@@ -262,8 +267,11 @@ def construct_model(config):
 	else:
 		print("prior_sd unspecified and will be estimated.")
 
-	#model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
-	model = ZINBSR(X, Y, Z, knot_count=knot_count, prior_sd=prior_sd, pivot=config["pivot"])
+	if Z is None:
+		model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
+	else:
+		# if knot_count = 0, then we should default to the NBSR disperion model: one dispersion per gene.
+		model = ZINBSR(X, Y, Z, dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 
 	print(torch.get_default_dtype())
@@ -284,11 +292,15 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	output_path = config["output_path"]
 	create_directory(output_path)
 
+	lr = config["lr"]
+	grbf_lr = config["grbf_lr"]
+
 	model, checkpoint = load_model_from_state_dict(state_dict, config)
 
+	# Initialize optimizers.
 	if checkpoint:
-		optimizer = torch.optim.Adam([model.beta, model.psi, model.b], lr = 0.05)
-		optimizer_grbf = torch.optim.Adam(model.grbf.parameters(), lr = 0.01)
+		optimizer = torch.optim.Adam([model.beta, model.psi, model.b], lr = lr)
+		optimizer_grbf = torch.optim.Adam(model.grbf.parameters(), lr = grbf_lr)
 
 		optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 		optimizer_grbf.load_state_dict(checkpoint['optimizer_grbf_state_dict'])
@@ -296,8 +308,18 @@ def run(state_dict, iterations, tol, lookback_iterations):
 		curr_best_loss = checkpoint['best_loss']
 		curr_best_model_state = checkpoint['best_model_state_dict']
 	else:
-		optimizer = torch.optim.Adam([model.beta, model.psi, model.b], lr = 0.05)
-		optimizer_grbf = torch.optim.Adam(model.grbf.parameters(), lr = 0.01)
+		# if isinstance(model, ZINBSR):
+		# 	if model.grbf is None:
+		# 		optimizer = torch.optim.Adam([model.beta, model.phi, model.psi, model.b], lr = lr)
+		# 		optimizer_grbf = None
+		# 	else:
+		# 		optimizer = torch.optim.Adam([model.beta, model.psi, model.b], lr = lr)
+		# 		optimizer_grbf = torch.optim.Adam(model.grbf.parameters(), lr = grbf_lr)
+		# else:
+		# 	optimizer = torch.optim.Adam(model.parameters(), lr = lr)
+		# 	optimizer_grbf = None
+		optimizer = torch.optim.Adam(model.parameters(), lr = lr)
+		optimizer_grbf = None
 		curr_loss_history = []
 		curr_best_loss = torch.inf
 		curr_best_model_state = None
@@ -312,7 +334,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
         	'model_state_dict': model.state_dict(),
 	        'best_model_state_dict': curr_best_model_state,
 	        'optimizer_state_dict': optimizer.state_dict(),
-			'optimizer_grbf_state_dict': optimizer_grbf.state_dict(),
+			'optimizer_grbf_state_dict': optimizer_grbf.state_dict() if optimizer_grbf else None,
 	        'loss': curr_loss_history,
 	        'best_loss': curr_best_loss,
 	        'converged': converged
@@ -326,19 +348,20 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	pi, _ = model.predict(model.beta, model.X)
 	#s = torch.sum(model.Y, 1)
 	mu = model.s[:,None] * pi
-	#phi = model.softplus(model.phi)
-	phi = model.grbf.evaluate(mu)
+	phi = model.softplus(model.phi)
+
+	if isinstance(model, ZINBSR):
+		np.savetxt(os.path.join(output_path, "nbsr_zinb_coef.csv"), model.b.data.numpy().transpose(), delimiter=',')
 
 	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(output_path, "nbsr_zinb_coef.csv"), model.b.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
 	
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
 
-def get_config(data_path, cols, z_cols, learning_rate, lam, shape, scale, knot_count, pivot):
+def get_config(data_path, cols, z_cols, lr, grbf_lr, lam, shape, scale, knot_count, pivot):
 	config = {
 		"output_path": data_path,
 		"counts_path": os.path.join(data_path, "Y.csv"),
@@ -347,7 +370,8 @@ def get_config(data_path, cols, z_cols, learning_rate, lam, shape, scale, knot_c
 		"prior_sd_path": os.path.join(data_path, "prior_sd.csv"),
 		"column_names": cols,
 		"z_columns": z_cols,
-		"lr": learning_rate,
+		"lr": lr,
+		"grbf_lr": grbf_lr,
 		"lam": lam,
 		"shape": shape,
 		"scale": scale,
@@ -360,17 +384,18 @@ def get_config(data_path, cols, z_cols, learning_rate, lam, shape, scale, knot_c
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
 @click.option('-i', '--iterations', default=1000, type=int)
-@click.option('-l', '--learning_rate', default=0.1, type=float)
+@click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
+@click.option('-r', '--grbf_lr', default=0.01, type=float, help="GRBF parameters learning rate.")
 @click.option('--z_columns', multiple=True, help="Enter list of strings specifying the covariate names to use for zero inflation.")
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
-@click.option('--knot_count', default=10, type=int)
+@click.option('--knot_count', default=0, type=int)
 @click.option('--pivot', default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, learning_rate, z_columns, lam, shape, scale, knot_count, pivot, tol, lookback_iterations):
-	config = get_config(data_path, list(vars), list(z_columns), learning_rate, lam, shape, scale, knot_count, pivot)
+def train(data_path, vars, iterations, lr, grbf_lr, z_columns, lam, shape, scale, knot_count, pivot, tol, lookback_iterations):
+	config = get_config(data_path, list(vars), list(z_columns), lr, grbf_lr, lam, shape, scale, knot_count, pivot)
 	state = {"config": config}
 	run(state, iterations, tol, lookback_iterations)
 
