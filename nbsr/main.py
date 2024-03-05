@@ -11,6 +11,7 @@ import torch
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.zinbsr import ZINBSR
 from nbsr.utils import *
+from nbsr.grbf import GaussianRBFPrior
 
 torch.set_default_dtype(torch.float64)
 torch.set_printoptions(precision=9)
@@ -251,7 +252,8 @@ def construct_model(config):
 	Z = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
 	dispersion = read_file_if_exists(config["dispersion_path"])
 	prior_sd = read_file_if_exists(config["prior_sd_path"])
-	knot_count = config["knot_count"]
+
+	# Construct Gaussian RBF prior on the dispersion parameter if grbf is specified.
 
 	print("Y: ", Y.shape)
 	print("X: ", X.shape)
@@ -270,8 +272,7 @@ def construct_model(config):
 	if Z is None:
 		model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	else:
-		# if knot_count = 0, then we should default to the NBSR disperion model: one dispersion per gene.
-		model = ZINBSR(X, Y, Z, dispersion, prior_sd=prior_sd, pivot=config["pivot"])
+		model = ZINBSR(X, Y, Z, config["logistic_max"], dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 
 	print(torch.get_default_dtype())
@@ -361,7 +362,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
 
-def get_config(data_path, cols, z_cols, lr, grbf_lr, lam, shape, scale, knot_count, pivot):
+def get_config(data_path, cols, z_cols, lr, grbf_lr, logistic_max, lam, shape, scale, grbf, pivot):
 	config = {
 		"output_path": data_path,
 		"counts_path": os.path.join(data_path, "Y.csv"),
@@ -372,10 +373,11 @@ def get_config(data_path, cols, z_cols, lr, grbf_lr, lam, shape, scale, knot_cou
 		"z_columns": z_cols,
 		"lr": lr,
 		"grbf_lr": grbf_lr,
+		"logistic_max": logistic_max,
 		"lam": lam,
 		"shape": shape,
 		"scale": scale,
-		"knot_count": knot_count,
+		"grbf": grbf,
 		"pivot": pivot
 	}
 	return config
@@ -386,16 +388,17 @@ def get_config(data_path, cols, z_cols, lr, grbf_lr, lam, shape, scale, knot_cou
 @click.option('-i', '--iterations', default=1000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('-r', '--grbf_lr', default=0.01, type=float, help="GRBF parameters learning rate.")
+@click.option('-L', '--logistic_max', default=0.2, type=float, help="ZINBSR max value for logistic function.")
 @click.option('--z_columns', multiple=True, help="Enter list of strings specifying the covariate names to use for zero inflation.")
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
-@click.option('--knot_count', default=0, type=int)
+@click.option('--grbf', default=False, type=bool)
 @click.option('--pivot', default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, grbf_lr, z_columns, lam, shape, scale, knot_count, pivot, tol, lookback_iterations):
-	config = get_config(data_path, list(vars), list(z_columns), lr, grbf_lr, lam, shape, scale, knot_count, pivot)
+def train(data_path, vars, iterations, lr, grbf_lr, logistic_max, z_columns, lam, shape, scale, grbf, pivot, tol, lookback_iterations):
+	config = get_config(data_path, list(vars), list(z_columns), lr, grbf_lr, logistic_max, lam, shape, scale, grbf, pivot)
 	state = {"config": config}
 	run(state, iterations, tol, lookback_iterations)
 

@@ -9,17 +9,15 @@ import time
 
 from nbsr.distributions import log_negbinomial, log_gamma, log_normal, log_invgamma, softplus_inv
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
-from nbsr.grbf import GaussianRBF
 
 class ZINBSR(NegativeBinomialRegressionModel):
-    def __init__(self, X, Y, Z, dispersion=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, Z, logistic_max=0.2, dispersion=None, prior_sd=None, pivot=False):
         super().__init__(X, Y, dispersion, prior_sd, pivot)
         # Z is a tensor storing the covariates to be used in predicting zero inflation.
         assert(isinstance(Z, torch.Tensor))
+        self.logistic_max = logistic_max
         self.Z = Z
         self.b = torch.nn.Parameter(torch.randn(self.Z.shape[1], dtype=torch.float64), requires_grad=True)
-        # if knot_count > 0:
-        #     self.grbf = GaussianRBF(0, torch.max(torch.log(Y)), knot_count)
 
     def log_likelihood(self, beta):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
@@ -31,17 +29,11 @@ class ZINBSR(NegativeBinomialRegressionModel):
         mu = self.s[:, None] * norm_expr
         log_lik_vals = log_negbinomial(self.Y, mu, self.softplus(self.phi))
 
-        # if self.grbf is not None:
-        #     dispersion = self.grbf.evaluate(mu)
-        #     log_lik_vals = log_negbinomial(self.Y, mu, dispersion)
-        # else:
-        #     log_lik_vals = log_negbinomial(self.Y, mu, self.softplus(self.phi))
-
         # compute epsilon.
         Zb = torch.matmul(self.Z, self.b)
         expZ = torch.exp(Zb)
         #epsilon = expZ / (1 + expZ)
-        epsilon = 0.3 / (1 + expZ)
+        epsilon = self.logistic_max / (1 + expZ)
         epsilon = epsilon[:,None]
 
         log_lik_nb = torch.log(1 - epsilon) + log_lik_vals

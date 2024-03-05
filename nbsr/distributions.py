@@ -38,3 +38,6 @@ def log_normal(x, mu, std):
 
 def softplus_inv(y):
     return y + y.neg().expm1().neg().log()
+
+def softplus(y):
+    return torch.nn.Softplus()(y)

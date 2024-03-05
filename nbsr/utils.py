@@ -33,7 +33,7 @@ def create_directory(path):
     if not os.path.exists(path):
     	os.makedirs(path)
 
-def softplus(x):
+def softplus_np(x):
     return np.log1p(np.exp(x))
 
 def reshape(model, params):

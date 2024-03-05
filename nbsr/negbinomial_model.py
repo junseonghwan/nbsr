@@ -7,10 +7,11 @@ import pandas as pd
 from scipy.stats import invgamma
 import time
 
-from nbsr.distributions import log_negbinomial, log_gamma, log_normal, log_invgamma, softplus_inv
+from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv, softplus
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
-    def __init__(self, X, Y, dispersion=None, prior_sd=None, pivot=False):
+    # when dispersion prior is unspecified, default to no prior.
+    def __init__(self, X, Y, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
         super().__init__()
         assert(isinstance(X, torch.Tensor))
         assert(isinstance(Y, torch.Tensor))
@@ -33,7 +34,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         # The parameters we adjust during training.
         self.dim = self.rna_count - 1 if pivot else self.rna_count
         self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
-        self.grbf = None
+        self.dispersion_prior = dispersion_prior
         if dispersion is None:
             self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
@@ -56,28 +57,28 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         #self.psi = softplus_inv(torch.tensor(invgamma.rvs(self.beta_var_shape, self.beta_var_scale, size=self.covariate_count+1)))
 
     def log_likelihood(self, beta):
-            """
-            Computes the log-likelihood of the negative binomial model.
+        """
+        Computes the log-likelihood of the negative binomial model.
 
-            Args:
-                beta (torch.Tensor): A tensor of shape (covariate_count * dim, 1) containing the model parameters.
+        Args:
+            beta (torch.Tensor): A tensor of shape (covariate_count * dim, 1) containing the model parameters.
 
-            Returns:
-                torch.Tensor: A tensor of shape (1,) containing the log-likelihood of the model.
-            """
-            # reshape beta:
-            beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-            log_unnorm_exp = torch.matmul(self.X, beta_)
-            if self.pivot:
-                log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
-            norm = torch.logsumexp(log_unnorm_exp, 1)
-            norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-            
-            log_lik_vals = log_negbinomial(self.Y, self.s[:, None] * norm_expr, self.softplus(self.phi))
-            log_lik = torch.sum(log_lik_vals)  # Sum all values
+        Returns:
+            torch.Tensor: A tensor of shape (1,) containing the log-likelihood of the model.
+        """
+        # reshape beta:
+        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
+        log_unnorm_exp = torch.matmul(self.X, beta_)
+        if self.pivot:
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
+        norm = torch.logsumexp(log_unnorm_exp, 1)
+        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
+        
+        log_lik_vals = log_negbinomial(self.Y, self.s[:, None] * norm_expr, self.softplus(self.phi))
+        log_lik = torch.sum(log_lik_vals)  # Sum all values
 
-            return(log_lik)
-    
+        return(log_lik)
+
     def log_beta_prior(self, beta):
         beta_ = beta.reshape(self.dim, self.covariate_count)
         sd = self.softplus(self.psi)
@@ -98,11 +99,16 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         """
         log_lik = self.log_likelihood(beta)
         sd = self.softplus(self.psi)
+        dispersion = self.softplus(self.phi)
         # normal prior on beta -- 0 mean and sd = softplus(psi).
-        log_prior1 = self.log_beta_prior(beta)
+        log_beta_prior = self.log_beta_prior(beta)
         # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
-        log_prior2 = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
-        log_posterior = log_lik + log_prior1 + log_prior2
+        log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
+        norm_expr, _ = self.predict(beta, self.X)
+        mu = self.s[:, None] * norm_expr
+        #phi_sd = softplus(self.dispersion_prior.psi)
+        log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(torch.log(dispersion), torch.mean(mu, 0)))
+        log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return(log_posterior)
 
     def log_lik_gradient_persample(self, beta):
@@ -210,6 +216,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             torch.Tensor: A tensor of the same shape as `beta` representing the gradient of the log posterior distribution.
         """
         log_prior_grad = self.log_beta_prior_gradient(beta)
+        
         log_lik_grad = self.log_lik_gradient(beta, tensorized)
         return log_lik_grad + log_prior_grad
     
