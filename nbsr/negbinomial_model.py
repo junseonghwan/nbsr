@@ -1,13 +1,9 @@
 import torch
 
-import os
-import math
 import numpy as np
-import pandas as pd
 from scipy.stats import invgamma
-import time
 
-from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv, softplus
+from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
@@ -107,7 +103,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         norm_expr, _ = self.predict(beta, self.X)
         mu = self.s[:, None] * norm_expr
         #phi_sd = softplus(self.dispersion_prior.psi)
-        log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(torch.log(dispersion), torch.mean(mu, 0)))
+        log_dispersion_prior = 0
+        if self.dispersion_prior is not None:
+            log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(torch.log(dispersion), torch.mean(mu, 0)))
         log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return(log_posterior)
 
