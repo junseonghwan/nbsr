@@ -28,7 +28,7 @@ class NBSR_dispersion(NegativeBinomialRegressionModel):
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
-        dispersion = torch.exp(self.disp_model.output(log_pi))
+        dispersion = torch.exp(self.disp_model.forward(log_pi))
 
         # Compute the log likelihood of Y
         log_lik = self.log_likelihood(mu, dispersion)

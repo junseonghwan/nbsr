@@ -34,7 +34,7 @@ class DispersionModel(torch.nn.Module):
         # softplus(self.psi) to get tau -- we will put this back when we implement sampling feature.
         #self.psi = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
 
-    def output(self, log_pi):
+    def forward(self, log_pi):
         # log \phi_{ij} = b_{0,j} + b_1 log \pi_{i,j} + b_2 log R_i + \beta' z_i + \epsilon_j.
         val0 = self.b0.unsqueeze(-1).transpose(0,1).expand(self.sample_count, self.feature_count)
         val1 = self.b1 * log_pi
@@ -51,9 +51,11 @@ class DispersionModel(torch.nn.Module):
         log_pi = torch.log(pi)
         mu = pi * self.R[:,None]
 
-        log_phi = self.output(log_pi)
+        log_phi = self.forward(log_pi)
         log_lik_vals = log_negbinomial(self.Y, mu, torch.exp(log_phi))
         #tau = self.softplus(self.psi)
-        #log_prior_vals = log_normal(log_phi, tau)
-        #log_posterior = log_lik_vals.sum() + log_prior_vals.sum()  # Sum all values
-        return(log_lik_vals.sum())
+        log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(0.1)) 
+        log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(0.1))
+        log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(0.1))
+        log_posterior = log_lik_vals.sum() + log_prior0 + log_prior1 + log_prior2
+        return(log_posterior)

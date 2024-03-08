@@ -3,6 +3,36 @@ import torch
 from scipy.special import logsumexp
 import pandas as pd
 import os
+import sys
+
+def construct_tensor_from_coldata(coldata_pd, column_names, sample_count, include_intercept=True):
+    X_intercept = torch.ones(sample_count, 1)
+    # column data does not exist -> fit a model with just the intercept.
+    if coldata_pd is None or len(column_names) == 0:
+        if include_intercept:
+            return X_intercept
+        else:
+            return None
+
+    # column data exists -> check that the column names specified in the config exists in the column data.
+    # if no, exit with error.
+    # if yes, retrieve the relevant column data and convert to dummy variables and return a tensor with intercept term prepended.
+    X_df_names = coldata_pd.columns.to_list()
+    for column_name in column_names:
+        exists = column_name in X_df_names
+        print("Column name " + column_name + " exists? " + str(exists))
+        if not exists:
+            print(column_name + " does not exist in the data frame.")
+            sys.exit(1)
+    X_df = coldata_pd[column_names]
+    X_design = pd.get_dummies(X_df, drop_first=True, dtype=int)
+    X_tensor = torch.tensor(X_design.to_numpy(), dtype=torch.float64)
+    if include_intercept:
+        X_tensor = torch.cat([X_intercept, X_tensor], dim = 1)
+    variable_map = {}
+    for idx, column in enumerate(X_design.columns):
+        variable_map[column] = idx
+    return (X_tensor, variable_map)
 
 def torch_rbf(x, a, b, c):
     # Ensuring x is a tensor

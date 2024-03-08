@@ -1,6 +1,5 @@
 import os
 import copy
-import sys
 
 import click
 import pandas as pd
@@ -11,7 +10,6 @@ import torch
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.zinbsr import ZINBSR
 from nbsr.utils import *
-from nbsr.grbf import GaussianRBFPrior
 
 torch.set_default_dtype(torch.float64)
 torch.set_printoptions(precision=9)
@@ -37,14 +35,29 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 	else:
 		print(f"Not converged")
 		return False	
+	
+def compute_observed_information(model):
+	print("Computeing Hessian...")
+	log_post_grad = model.log_posterior_gradient(model.beta)
+	gradient_matrix = torch.zeros(log_post_grad.size(0), model.beta.size(0))
+	# Compute the gradient for each component of log_post_grad w.r.t. beta
+	for k in range(log_post_grad.size(0)):
+		# Zero previous gradient
+		if model.beta.grad is not None:
+			model.beta.grad.zero_()
 
-def inference_beta(model, var, w1, w0):
+		# Backward on the k-th component of y
+		log_post_grad[k].backward(retain_graph=True)
+
+		# Store the gradient
+		gradient_matrix[k,:] = model.beta.grad
+
+	return -gradient_matrix
+
+def inference_beta(model, var, w1, w0, x_map):
 	"""
 	Compute inference statistics for contrasting two levels for a given variable of interest.
-	Note: typically w0 should correspond to the baseline corresponding to control while w1 the treatment level.
-	If neither w0 nor w1 corresponds to a baseline level, then we will return beta_{w1} - beta_{w0}.
-	The variance will be given by var(beta_{w1}) + var(beta_{w0}), 
-	i.e., the term -2 cov(beta_{w1}, beta_{w0}) is not included in the calculation of variance.
+	Note: w0 corresponds to the denominator in the log ratio while w1 corresponds to the numerator.
 
 	Parameters
 	----------
@@ -57,13 +70,15 @@ def inference_beta(model, var, w1, w0):
 		The name of the numerator level for the fold change.
 	w0 : str
 		The name of the denominator level for the fold change.
+	x_map: dict
+		The dictionary containing map from var_w1/var_w0 to column index for the design matrix.
 
 	Returns
 	-------
 	res : pandas DataFrame
 		A DataFrame with the following columns:
 		- `features`: the names of the features in the model.
-		- `log2Fc`: the log2 fold change between the two levels of the variable.
+		- `logFC`: the natural logarithm fold change between the two levels of the variable.
 		- `stdErr`: the standard error of the log2 fold change.
 		- `z-score`: the z-score.
 		- `pValue`: the p-value.
@@ -72,7 +87,7 @@ def inference_beta(model, var, w1, w0):
 	# Compute observed information matrix.
 	# Compute (pseudo) inverse of observed Fisher information matrix to get covariance matrix.
 	# Compute standard errors.
-	I = model.compute_observed_information(recompute=False)
+	I = compute_observed_information(model)
 	S = torch.linalg.pinv(I)
 
 	std_err_reshaped = reshape(model, torch.sqrt(torch.diag(S))).data.numpy()
@@ -80,23 +95,20 @@ def inference_beta(model, var, w1, w0):
 
 	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
 	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
-	# Get a copy of the design matrix.
-	X_df = pd.get_dummies(model.X_df, drop_first=True, dtype=int)
-	colnames = X_df.columns.values
-	col_idx0 = np.where(colnames == var_level0)[0]
-	col_idx1 = np.where(colnames == var_level1)[0]
+	col_idx0 = x_map[var_level0] if var_level0 in x_map else None
+	col_idx1 = x_map[var_level1] if var_level1 in x_map else None
 	found = False
-	if len(col_idx0) > 0:
+	if col_idx0 is not None:
 		# Offset by 1 because the first column is the intercept.
-		beta0 = beta_reshaped[1+col_idx0[0],:]
-		std_err0 = std_err_reshaped[1+col_idx0[0],:]
+		beta0 = beta_reshaped[1+col_idx0,:]
+		std_err0 = std_err_reshaped[1+col_idx0,:]
 		found = True
 	else:
 		beta0 = 0
 		std_err0 = 0
-	if len(col_idx1) > 0:
-		beta1 = beta_reshaped[1+col_idx1[0],:]
-		std_err1 = std_err_reshaped[1+col_idx1[0],:]
+	if col_idx1 is not None:
+		beta1 = beta_reshaped[1+col_idx1,:]
+		std_err1 = std_err_reshaped[1+col_idx1,:]
 		found = True
 	else:
 		beta1 = 0
@@ -112,7 +124,7 @@ def inference_beta(model, var, w1, w0):
 	# First column is the variable name.
 	res["features"] = model.Y_df.index.to_list()
 	# Second column is the log2 fold change.
-	res["log2FC"] = logFC/np.log(2)
+	res["logFC"] = logFC/np.log(2)
 	# Third column is the standard error.
 	res["stdErr"] = std_err/np.log(2)
 	# Fourth column is the z-score.
@@ -124,7 +136,7 @@ def inference_beta(model, var, w1, w0):
 	return (res, I)
 
 def inference_logRR(model, var, w1, w0):
-	I = model.compute_observed_information(recompute=False)
+	I = model.compute_observed_information()
 	S = torch.linalg.pinv(I)
 
 	X_df = pd.get_dummies(model.X_df, drop_first=True, dtype=int)
@@ -213,33 +225,6 @@ def fit_posterior(model, optimizer, optimizer_grbf, iterations, tol, lookback_it
 	converged = assess_convergence(loss_history, tol, lookback_iterations)
 	return (loss_history, best_model_state, best_loss, converged)
 
-def construct_tensor_from_coldata(coldata_pd, column_names, sample_count, include_intercept=True):
-	X_intercept = torch.ones(sample_count, 1)
-	# column data does not exist -> fit a model with just the intercept.
-	if coldata_pd is None or len(column_names) == 0:
-		if include_intercept:
-			return X_intercept
-		else:
-			return None
-
-	# column data exists -> check that the column names specified in the config exists in the column data.
-	# if no, exit with error.
-	# if yes, retrieve the relevant column data and convert to dummy variables and return a tensor with intercept term prepended.
-	X_df_names = coldata_pd.columns.to_list()
-	for column_name in column_names:
-		exists = column_name in X_df_names
-		print("Column name " + column_name + " exists? " + str(exists))
-		if not exists:
-			print(column_name + " does not exist in the data frame.")
-			sys.exit(1)
-	X_df = coldata_pd[column_names]
-	#if X_df.shape[1] > 0:
-	#	X_tensor = torch.tensor(pd.get_dummies(X_df, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
-	X_tensor = torch.tensor(pd.get_dummies(X_df, drop_first=True, dtype=int).to_numpy(), dtype=torch.float64)
-	if include_intercept:
-		X_tensor = torch.cat([X_intercept, X_tensor], dim = 1)
-	return X_tensor
-
 def construct_model(config):
 	click.echo(config)
 	counts_pd = pd.read_csv(config["counts_path"])
@@ -248,10 +233,12 @@ def construct_model(config):
 	else:
 		coldata_pd = None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
-	X = construct_tensor_from_coldata(coldata_pd, config["column_names"], counts_pd.shape[1])
-	Z = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
+	X, x_map = construct_tensor_from_coldata(coldata_pd, config["column_names"], counts_pd.shape[1])
+	Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
 	dispersion = read_file_if_exists(config["dispersion_path"])
 	prior_sd = read_file_if_exists(config["prior_sd_path"])
+	config["x_map"] = x_map
+	config["z_map"] = z_map
 
 	# Construct Gaussian RBF prior on the dispersion parameter if grbf is specified.
 
@@ -431,8 +418,8 @@ def results(checkpoint_path, var, w1, w0, recompute_hessian):
 		hessian = np.loadtxt(os.path.join(output_path, "hessian.csv"), delimiter=',')
 		model.hessian = torch.from_numpy(hessian).double()
 
-	res_beta, hessian = inference_beta(model, var, w1, w0)
-	logRR, logRR_std, _  = inference_logRR(model, var, w1, w0)
+	res_beta, hessian = inference_beta(model, var, w1, w0, config["x_map"])
+	logRR, logRR_std, _  = inference_logRR(model, var, w1, w0, config["x_map"])
 
 	res_beta.to_csv(os.path.join(output_path, "nbsr_results.csv"), index=False)
 	if not os.path.exists(os.path.join(output_path, "hessian.csv")):

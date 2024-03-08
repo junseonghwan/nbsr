@@ -39,9 +39,11 @@ class TestNegBinModel(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
     
-        Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
-        X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(X_df, Y_df, dispersion = phi, pivot=False)
+        print(Y.shape)
+        print(X.shape)
+        #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+        #X_df = pd.DataFrame(X)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
         z = model.log_likelihood(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
@@ -58,9 +60,9 @@ class TestNegBinModel(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
     
-        Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
-        X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(X_df, Y_df, dispersion = phi, pivot=False)
+        #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+        #X_df = pd.DataFrame(X)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
         grad_expected = model.log_lik_gradient(model.beta, tensorized=False).data.numpy()
         grad_actual = model.log_lik_gradient(model.beta, tensorized=True).data.numpy()
         print(grad_expected)
@@ -74,9 +76,9 @@ class TestNegBinModel(unittest.TestCase):
         (Y, X, phi) = generate_data(d, N, J)
 
         print("Test gradient of log prior over beta...")
-        Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
-        X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(X_df, Y_df, dispersion = phi, pivot=False)
+        #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+        #X_df = pd.DataFrame(X)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
         model.specify_beta_prior(1, 3, 2)
         z = model.log_beta_prior(model.beta)
         if model.beta.grad is not None:
@@ -95,9 +97,9 @@ class TestNegBinModel(unittest.TestCase):
         (Y, X, phi) = generate_data(d, N, J)
 
         print("Test log posterior gradient")
-        Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
-        X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(X_df, Y_df, dispersion = phi, pivot=False)
+        #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+        #X_df = pd.DataFrame(X)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
         model.specify_beta_prior(1, 3, 2)
         z = model.log_posterior(model.beta)
         if model.beta.grad is not None:
@@ -121,9 +123,9 @@ class TestNegBinModel(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
     
-        Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
-        X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(X_df, Y_df, dispersion = phi, pivot=False)
+        #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+        #X_df = pd.DataFrame(X)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
 
         log_lik_grad = model.log_lik_gradient(model.beta)
         hess_expected = torch.zeros(log_lik_grad.size(0), model.beta.size(0))

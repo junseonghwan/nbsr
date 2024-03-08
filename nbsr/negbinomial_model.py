@@ -109,6 +109,17 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return(log_posterior)
 
+    def predict(self, beta, X):
+        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
+        log_unnorm_exp = torch.matmul(X, beta_)
+        if self.pivot:
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
+        norm = torch.logsumexp(log_unnorm_exp, 1)
+        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
+        pi = norm_expr
+        return(pi, log_unnorm_exp)
+
+    ### Gradient of the model
     def log_lik_gradient_persample(self, beta):
         """
         Computes the gradient of the log-likelihood function with respect to the model parameters for each sample.
@@ -147,7 +158,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             grad[idx,:] = torch.sum(ret3, 2).flatten()
         return grad
     
-    def log_lik_gradient_persample2(self, beta):
+    def log_lik_gradient_persample_tensorized(self, beta):
         """
         Computes the gradient of the log-likelihood function with respect to the model parameters for each sample.
         Uses tensor operations instead of for loops.
@@ -179,7 +190,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         ret = torch.einsum('nj,njkp->njkp', c0, XPi)
         grad = torch.sum(ret.transpose(2,3), 1).reshape(self.sample_count, J * self.covariate_count)
         return grad
-
+    
     def log_lik_gradient(self, beta, tensorized=True):
         """
         Computes the gradient of the log-likelihood function with respect to the model parameters.
@@ -192,7 +203,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             torch.Tensor: The gradient of the log-likelihood function with respect to the model parameters.
         """
         if tensorized:
-            return torch.sum(self.log_lik_gradient_persample2(beta), 0)
+            return torch.sum(self.log_lik_gradient_persample_tensorized(beta), 0)
         else:
             return torch.sum(self.log_lik_gradient_persample(beta), 0)
 
@@ -217,7 +228,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         
         log_lik_grad = self.log_lik_gradient(beta, tensorized)
         return log_lik_grad + log_prior_grad
-    
+
     def log_lik_hessian_persample(self, beta):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         dispersion = self.softplus(self.phi)
@@ -265,38 +276,3 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
     def log_posterior_hessian(self, beta):
         sd = self.softplus(self.psi).repeat(self.dim)
         return torch.sum(self.log_lik_hessian_persample(beta), 0) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
-
-    def predict(self, beta, X):
-        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-        log_unnorm_exp = torch.matmul(X, beta_)
-        if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
-        norm = torch.logsumexp(log_unnorm_exp, 1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        pi = norm_expr
-        return(pi, log_unnorm_exp)
-
-    def compute_observed_information(self, recompute=True):
-        if self.hessian is not None and not recompute:
-            return self.hessian
-        
-        print("Computeing Hessian...")
-        log_post_grad = self.log_posterior_gradient(self.beta)
-        gradient_matrix = torch.zeros(log_post_grad.size(0), self.beta.size(0))
-        # Compute the gradient for each component of log_post_grad w.r.t. beta
-        for k in range(log_post_grad.size(0)):
-            # Zero previous gradient
-            if self.beta.grad is not None:
-                self.beta.grad.zero_()
-
-            # Backward on the k-th component of y
-            log_post_grad[k].backward(retain_graph=True)
-
-            # Store the gradient
-            gradient_matrix[k,:] = self.beta.grad
-
-        self.hessian = -gradient_matrix
-        return self.hessian
-
-
-
