@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 
 import nbsr.negbinomial_model as nbm
+import nbsr.nbsr_dispersion as nbsrd
 
 def generate_data(d, N, J):
     # Generate data for testing.
@@ -31,7 +32,7 @@ def generate_data(d, N, J):
 
     return(Y, X, phi)
 
-class TestNegBinModel(unittest.TestCase):
+class TestNBSRGradients(unittest.TestCase):
 
     def test_log_lik_gradient(self):
         d = 3
@@ -146,6 +147,26 @@ class TestNegBinModel(unittest.TestCase):
         #print(hess_realized)
         print("Testing Hessian computation...")
         self.assertTrue(np.allclose(hess_expected, hess_realized))
+
+class TestNBSRDispersionGradients(unittest.TestCase):
+
+    def test_log_lik_gradient(self):
+        d = 3
+        N = 20
+        J = 5
+        (Y, X, phi) = generate_data(d, N, J)
+    
+        model = nbsrd.NBSRDispersion(torch.tensor(X), torch.tensor(Y))
+        z = model.log_likelihood2(model.beta)
+        if model.beta.grad is not None:
+            model.beta.grad.zero_()
+        z.backward(retain_graph=True)
+        grad_expected = model.beta.grad.data.numpy()
+        grad_actual = model.log_lik_gradient_persample(model.beta).sum(0).data.numpy()
+        print(grad_expected)
+        print(grad_actual)
+        self.assertTrue(np.allclose(grad_expected, grad_actual))
+
 
 if __name__ == '__main__':
     unittest.main()

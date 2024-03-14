@@ -109,6 +109,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return(log_posterior)
 
+    def forward(self, beta):
+        return self.log_posterior(beta)
+
     def predict(self, beta, X):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         log_unnorm_exp = torch.matmul(X, beta_)
@@ -144,7 +147,6 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             s = torch.sum(y)
             mean = s * pi
             sigma2 = mean + dispersion * (mean ** 2)
-            p = mean / sigma2
             r = 1 / dispersion
             A = torch.eye(J) - pi.repeat((J, 1))
             A = A.transpose(0, 1)
