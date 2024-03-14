@@ -97,3 +97,19 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
 
             grad[idx,:] = torch.sum(val0 + val1, 2).flatten()
         return grad
+
+    def log_posterior_gradient(self, beta):
+        """
+        Computes the gradient of the log posterior distribution with respect to the model parameters.
+
+        Args:
+            beta (torch.Tensor): A tensor of shape (dim * covariate_count,) representing the model parameters.
+            tensorized (bool): Whether to use the tensorized version of the gradient computation.
+
+        Returns:
+            torch.Tensor: A tensor of the same shape as `beta` representing the gradient of the log posterior distribution.
+        """
+        log_prior_grad = self.log_beta_prior_gradient(beta)
+        
+        log_lik_grad = self.log_lik_gradient_persample(beta).sum(0)
+        return log_lik_grad + log_prior_grad

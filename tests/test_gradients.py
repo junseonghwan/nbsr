@@ -167,6 +167,24 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         print(grad_actual)
         self.assertTrue(np.allclose(grad_expected, grad_actual))
 
+    def test_log_posterior_gradient(self):
+        d = 3
+        N = 20
+        J = 5
+        (Y, X, phi) = generate_data(d, N, J)
+    
+        model = nbsrd.NBSRDispersion(torch.tensor(X), torch.tensor(Y))
+        model.specify_beta_prior(1, 3, 2)
+        z = model.log_posterior(model.beta)
+        if model.beta.grad is not None:
+            model.beta.grad.zero_()
+        z.backward(retain_graph=True)
+        grad_expected = model.beta.grad.data.numpy()
+        grad_actual = model.log_posterior_gradient(model.beta).data.numpy()
+        print(grad_expected.shape)
+        print(grad_actual.shape)
+        self.assertTrue(np.allclose(grad_expected, grad_actual))
+
 
 if __name__ == '__main__':
     unittest.main()
