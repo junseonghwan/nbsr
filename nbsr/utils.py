@@ -10,7 +10,7 @@ def construct_tensor_from_coldata(coldata_pd, column_names, sample_count, includ
     # column data does not exist -> fit a model with just the intercept.
     if coldata_pd is None or len(column_names) == 0:
         if include_intercept:
-            return X_intercept
+            return (X_intercept, {})
         else:
             return None
 

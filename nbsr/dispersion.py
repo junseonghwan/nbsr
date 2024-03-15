@@ -37,8 +37,8 @@ class DispersionModel(torch.nn.Module):
 
     def forward(self, log_pi):
         # log_pi has shape (self.sample_count, self.feature_count)
-        assert(log_pi.shape[0] == self.sample_count)
-        assert(log_pi.shape[1] == self.feature_count)
+        #assert(log_pi.shape[0] == self.sample_count)
+        #assert(log_pi.shape[1] == self.feature_count)
         # log \phi_{ij} = b_{0,j} + b_1 log \pi_{i,j} + b_2 log R_i + \beta' z_i + \epsilon_j.
         #val0 = self.b0.unsqueeze(-1).transpose(0,1).expand(self.sample_count, self.feature_count)
         val0 = self.b0
@@ -52,15 +52,15 @@ class DispersionModel(torch.nn.Module):
         return(log_phi)
 
     # log P(Y | \mu, dispersion) + log P(dispersion | \theta)
-    def log_likelihood(self, pi):
+    def log_posterior(self, pi):
         log_pi = torch.log(pi)
         mu = pi * self.R[:,None]
 
         log_phi = self.forward(log_pi)
         log_lik_vals = log_negbinomial(self.Y, mu, torch.exp(log_phi))
         #tau = self.softplus(self.psi)
-        log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(1.)) 
-        log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(1.))
-        log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(1.))
+        log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(0.1)) 
+        log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(0.1))
+        log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(0.1))
         log_posterior = log_lik_vals.sum() + log_prior0 + log_prior1 + log_prior2
         return(log_posterior)

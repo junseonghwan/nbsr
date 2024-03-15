@@ -8,6 +8,7 @@ import scipy
 import torch
 
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
+from nbsr.nbsr_dispersion import NBSRDispersion
 from nbsr.zinbsr import ZINBSR
 from nbsr.utils import *
 
@@ -54,7 +55,7 @@ def compute_observed_information(model):
 
 	return -gradient_matrix
 
-def inference_beta(model, var, w1, w0, x_map):
+def inference_beta(model, var, w1, w0, x_map, S=None):
 	"""
 	Compute inference statistics for contrasting two levels for a given variable of interest.
 	Note: w0 corresponds to the denominator in the log ratio while w1 corresponds to the numerator.
@@ -78,7 +79,7 @@ def inference_beta(model, var, w1, w0, x_map):
 	res : pandas DataFrame
 		A DataFrame with the following columns:
 		- `features`: the names of the features in the model.
-		- `logFC`: the natural logarithm fold change between the two levels of the variable.
+		- `beta`: the natural logarithm fold change between the two levels of the variable.
 		- `stdErr`: the standard error of the log2 fold change.
 		- `z-score`: the z-score.
 		- `pValue`: the p-value.
@@ -87,8 +88,9 @@ def inference_beta(model, var, w1, w0, x_map):
 	# Compute observed information matrix.
 	# Compute (pseudo) inverse of observed Fisher information matrix to get covariance matrix.
 	# Compute standard errors.
-	I = compute_observed_information(model)
-	S = torch.linalg.pinv(I)
+	if S is None:
+		I = compute_observed_information(model)
+		S = torch.linalg.pinv(I)
 
 	std_err_reshaped = reshape(model, torch.sqrt(torch.diag(S))).data.numpy()
 	beta_reshaped = get_beta(model).data.numpy()
@@ -116,7 +118,7 @@ def inference_beta(model, var, w1, w0, x_map):
 	if not found:
 		raise ValueError("Error: {level0}, {level1} not found in {varname}.".format(level0=w0, level1=w1, varname=var))
 
-	logFC = (beta1 - beta0)
+	diff = (beta1 - beta0)
 	std_err = (std_err0**2) + (std_err1**2)
 
 	# Create a data frame with the results.
@@ -124,41 +126,48 @@ def inference_beta(model, var, w1, w0, x_map):
 	# First column is the variable name.
 	res["features"] = model.Y_df.index.to_list()
 	# Second column is the log2 fold change.
-	res["logFC"] = logFC/np.log(2)
+	res["diff"] = diff
 	# Third column is the standard error.
 	res["stdErr"] = std_err/np.log(2)
 	# Fourth column is the z-score.
-	res["stat"] = logFC / std_err
+	res["stat"] = diff / std_err
 	# Fifth column is the p-value.
 	res["pvalue"] = 2 * scipy.stats.norm.cdf(-np.abs(res["stat"]))
 	# Sixth column is the Benjamini-Hochberg adjusted p-value.
 	#res["adjPValue"] = false_discovery_control(res["pvalue"], method="bh")
 	return (res, I)
 
-def inference_logRR(model, var, w1, w0):
-	I = model.compute_observed_information()
+def inference_logRR(model, var, w1, w0, x_map, I = None):
+	if I is None:
+		I = compute_observed_information(model)
+	
 	S = torch.linalg.pinv(I)
+	var = "trt"
+	w0 = "null"
+	w1 = "alt"
+	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
+	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
+	col_idx0 = x_map[var_level0] if var_level0 in x_map else None
+	col_idx1 = x_map[var_level1] if var_level1 in x_map else None
+	print(col_idx0, col_idx1)
 
-	X_df = pd.get_dummies(model.X_df, drop_first=True, dtype=int)
-	colnames = X_df.columns.values
 	Z0 = model.X.clone()
 	Z1 = model.X.clone()
 
-	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
-	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
-	col_idx0 = np.where(colnames == var_level0)[0]
-	col_idx1 = np.where(colnames == var_level1)[0]
-	# Zero out all columns of Z0,Z1 corresponding to var.
-	for i,colname in enumerate(colnames):
+	# Zero out columns corresponding to var 
+	for i,colname in enumerate(x_map):
 		if var in colname: # Checks if var is a substring of colname.
-			Z0[:,i+1] = 0
+			Z0[:,i+1] = 0 # +1 to account for the intercept.
 			Z1[:,i+1] = 0
 
-	if len(col_idx0) > 0:
-		Z0[:,col_idx0[0]+1] = 1
-	if len(col_idx1) > 0:
-		Z1[:,col_idx1[0]+1] = 1
-
+	found = False
+	if col_idx0 is not None:
+		Z0[:,col_idx0+1] = 1
+		found = True
+	if col_idx1 is not None:
+		Z1[:,col_idx1+1] = 1
+		found = True
+	print(found)
 	pi0, _ = model.predict(model.beta, Z0)
 	pi1, _ = model.predict(model.beta, Z1)
 	logRRi = torch.log(pi1) - torch.log(pi0)
@@ -194,7 +203,7 @@ def inference_logRR(model, var, w1, w0):
 	std_err = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 	return (logFC, std_err, I)
 
-def fit_posterior(model, optimizer, optimizer_grbf, iterations, tol, lookback_iterations):
+def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	# Fit the model.
 	loss_history = []
 	# We will store the best solution.
@@ -206,12 +215,6 @@ def fit_posterior(model, optimizer, optimizer_grbf, iterations, tol, lookback_it
 		optimizer.zero_grad()
 		loss.backward(retain_graph=True)
 		optimizer.step()
-
-		if optimizer_grbf is not None:
-			loss = -model.log_posterior(model.beta)
-			optimizer_grbf.zero_grad()
-			loss.backward()
-			optimizer_grbf.step()
 
 		loss_history.append(loss.data.numpy())
 		if loss.data < best_loss:
@@ -229,37 +232,39 @@ def construct_model(config):
 	click.echo(config)
 	counts_pd = pd.read_csv(config["counts_path"])
 	if os.path.exists(config["coldata_path"]):
-		coldata_pd = pd.read_csv(config["coldata_path"], na_filter=False)
+		coldata_pd = pd.read_csv(config["coldata_path"], na_filter=False, skipinitialspace=True)
 	else:
 		coldata_pd = None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
 	X, x_map = construct_tensor_from_coldata(coldata_pd, config["column_names"], counts_pd.shape[1])
-	Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
+	#Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
 	dispersion = read_file_if_exists(config["dispersion_path"])
 	prior_sd = read_file_if_exists(config["prior_sd_path"])
+	dispersion_model = config["dispersion_model"]
 	config["x_map"] = x_map
-	config["z_map"] = z_map
+	#config["z_map"] = z_map
 
 	# Construct Gaussian RBF prior on the dispersion parameter if grbf is specified.
 
 	print("Y: ", Y.shape)
 	print("X: ", X.shape)
-	if Z is not None:
-		print("Z: ", Z.shape)
-
+	# if Z is not None:
+	# 	print("Z: ", Z.shape)
 	if dispersion is not None:
 		print("dispersion: ", dispersion.shape)
 	else:
-		print("dispersion unspecified and will be estimated.")
+		print("dispersion unspecified and will be estimated using " + ("log linear model." if dispersion_model else "feature-specific parameterization."))
 	if prior_sd is not None:
 		print("prior_sd: ", prior_sd.shape)
 	else:
 		print("prior_sd unspecified and will be estimated.")
 
-	if Z is None:
+	if dispersion_model:
+		model = NBSRDispersion(X, Y, prior_sd=prior_sd, pivot=config["pivot"])
+	elif dispersion_model:
 		model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
-	else:
-		model = ZINBSR(X, Y, Z, config["logistic_max"], dispersion, prior_sd=prior_sd, pivot=config["pivot"])
+	# else:
+	# 	model = ZINBSR(X, Y, Z, config["logistic_max"], dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 
 	print(torch.get_default_dtype())
@@ -281,38 +286,24 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	create_directory(output_path)
 
 	lr = config["lr"]
-	grbf_lr = config["grbf_lr"]
 
 	model, checkpoint = load_model_from_state_dict(state_dict, config)
 
 	# Initialize optimizers.
 	if checkpoint:
-		optimizer = torch.optim.Adam([model.beta, model.psi, model.b], lr = lr)
-		optimizer_grbf = torch.optim.Adam(model.grbf.parameters(), lr = grbf_lr)
-
+		optimizer = torch.optim.Adam(model.parameters(), lr = lr)
 		optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-		optimizer_grbf.load_state_dict(checkpoint['optimizer_grbf_state_dict'])
 		curr_loss_history = checkpoint['loss']
 		curr_best_loss = checkpoint['best_loss']
 		curr_best_model_state = checkpoint['best_model_state_dict']
 	else:
-		# if isinstance(model, ZINBSR):
-		# 	if model.grbf is None:
-		# 		optimizer = torch.optim.Adam([model.beta, model.phi, model.psi, model.b], lr = lr)
-		# 		optimizer_grbf = None
-		# 	else:
-		# 		optimizer = torch.optim.Adam([model.beta, model.psi, model.b], lr = lr)
-		# 		optimizer_grbf = torch.optim.Adam(model.grbf.parameters(), lr = grbf_lr)
-		# else:
-		# 	optimizer = torch.optim.Adam(model.parameters(), lr = lr)
-		# 	optimizer_grbf = None
 		optimizer = torch.optim.Adam(model.parameters(), lr = lr)
 		optimizer_grbf = None
 		curr_loss_history = []
 		curr_best_loss = torch.inf
 		curr_best_model_state = None
 
-	loss_history, best_model_state, best_loss, converged = fit_posterior(model, optimizer, optimizer_grbf, iterations, tol, lookback_iterations)
+	loss_history, best_model_state, best_loss, converged = fit_posterior(model, optimizer, iterations, tol, lookback_iterations)
 	curr_loss_history.extend(loss_history)
 	if best_loss < curr_best_loss:
 		curr_best_loss = best_loss
@@ -334,12 +325,11 @@ def run(state_dict, iterations, tol, lookback_iterations):
 
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.beta, model.X)
-	#s = torch.sum(model.Y, 1)
-	mu = model.s[:,None] * pi
 	phi = model.softplus(model.phi)
-
 	if isinstance(model, ZINBSR):
 		np.savetxt(os.path.join(output_path, "nbsr_zinb_coef.csv"), model.b.data.numpy().transpose(), delimiter=',')
+	if isinstance(model, NBSRDispersion):
+		phi = torch.exp(model.disp_model(torch.log(pi)))
 
 	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
@@ -349,7 +339,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
 
-def get_config(data_path, cols, z_cols, lr, grbf_lr, logistic_max, lam, shape, scale, grbf, pivot):
+def get_config(data_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, pivot):
 	config = {
 		"output_path": data_path,
 		"counts_path": os.path.join(data_path, "Y.csv"),
@@ -359,12 +349,11 @@ def get_config(data_path, cols, z_cols, lr, grbf_lr, logistic_max, lam, shape, s
 		"column_names": cols,
 		"z_columns": z_cols,
 		"lr": lr,
-		"grbf_lr": grbf_lr,
 		"logistic_max": logistic_max,
 		"lam": lam,
 		"shape": shape,
 		"scale": scale,
-		"grbf": grbf,
+		"dispersion_model": dispersion_model,
 		"pivot": pivot
 	}
 	return config
@@ -374,18 +363,17 @@ def get_config(data_path, cols, z_cols, lr, grbf_lr, logistic_max, lam, shape, s
 @click.argument('vars', nargs=-1)
 @click.option('-i', '--iterations', default=1000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
-@click.option('-r', '--grbf_lr', default=0.01, type=float, help="GRBF parameters learning rate.")
 @click.option('-L', '--logistic_max', default=0.2, type=float, help="ZINBSR max value for logistic function.")
 @click.option('--z_columns', multiple=True, help="Enter list of strings specifying the covariate names to use for zero inflation.")
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
-@click.option('--grbf', default=False, type=bool)
+@click.option('--dispersion_model', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--pivot', default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, grbf_lr, logistic_max, z_columns, lam, shape, scale, grbf, pivot, tol, lookback_iterations):
-	config = get_config(data_path, list(vars), list(z_columns), lr, grbf_lr, logistic_max, lam, shape, scale, grbf, pivot)
+def train(data_path, vars, iterations, lr, logistic_max, z_columns, lam, shape, scale, dispersion_model, pivot, tol, lookback_iterations):
+	config = get_config(data_path, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, pivot)
 	state = {"config": config}
 	run(state, iterations, tol, lookback_iterations)
 
@@ -403,7 +391,7 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.argument('var', type=str)
 @click.argument('w1', type=str)
 @click.argument('w0', type=str)
-@click.option('--recompute_hessian', default=False, type=bool)
+@click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
 def results(checkpoint_path, var, w1, w0, recompute_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
 	config = state_dict["config"]
@@ -414,16 +402,17 @@ def results(checkpoint_path, var, w1, w0, recompute_hessian):
 
 	# Check if hessian matrix exists.
 	# Load it and set it as the observed information matrix on model.
+	I = None
 	if not recompute_hessian and os.path.exists(os.path.join(output_path, "hessian.csv")):
 		hessian = np.loadtxt(os.path.join(output_path, "hessian.csv"), delimiter=',')
-		model.hessian = torch.from_numpy(hessian).double()
+		I = torch.from_numpy(hessian).double()
 
-	res_beta, hessian = inference_beta(model, var, w1, w0, config["x_map"])
-	logRR, logRR_std, _  = inference_logRR(model, var, w1, w0, config["x_map"])
+	#res_beta, hessian = inference_beta(model, var, w1, w0, config["x_map"])
+	logRR, logRR_std, I  = inference_logRR(model, var, w1, w0, config["x_map"], I)
 
-	res_beta.to_csv(os.path.join(output_path, "nbsr_results.csv"), index=False)
-	if not os.path.exists(os.path.join(output_path, "hessian.csv")):
-		np.savetxt(os.path.join(output_path, "hessian.csv"), hessian, delimiter=',')
+	#res_beta.to_csv(os.path.join(output_path, "nbsr_results.csv"), index=False)
+	if recompute_hessian:
+		np.savetxt(os.path.join(output_path, "hessian.csv"), I, delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_logRR.csv"), logRR, delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
