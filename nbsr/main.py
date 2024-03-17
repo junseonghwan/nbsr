@@ -1,5 +1,6 @@
 import os
 import copy
+import shutil
 
 import click
 import pandas as pd
@@ -335,6 +336,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
+	return(curr_best_loss)
 
 def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, pivot):
 	config = {
@@ -371,11 +373,22 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
 def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, pivot, tol, lookback_iterations):
+	losses = []
 	for run_no in range(runs):
 		outpath = os.path.join(data_path, "run" + str(run_no))
 		config = get_config(data_path, outpath, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, pivot)
 		state = {"config": config}
-		run(state, iterations, tol, lookback_iterations)
+		loss = run(state, iterations, tol, lookback_iterations)
+		losses.append(loss)
+
+	# Find the best run and copy the results and checkpoint file up to the data_path.
+	best_run = np.argmin(np.array(losses))
+	best_run_path = os.path.join(data_path, "run" + str(best_run))
+	for filename in os.listdir(best_run_path):
+		file_path = os.path.join(best_run_path, filename)
+		if os.path.isfile(file_path):
+			# Copy each file to data_path
+			shutil.copy2(file_path, os.path.join(data_path, filename))
 
 @click.command()
 @click.argument('checkpoint_path', type=click.Path(exists=True))
@@ -391,20 +404,20 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.argument('var', type=str)
 @click.argument('w1', type=str)
 @click.argument('w0', type=str)
-@click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--recompute_hessian', is_flag=True, show_default=True, default=True, type=bool)
 def results(checkpoint_path, var, w1, w0, recompute_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
 	config = state_dict["config"]
-	output_path = config["output_path"]
-	create_directory(output_path)
+	#output_path = config["output_path"]
+	#create_directory(output_path)
 
 	model, _ = load_model_from_state_dict(state_dict, config)
 
 	# Check if hessian matrix exists.
 	# Load it and set it as the observed information matrix on model.
 	I = None
-	if not recompute_hessian and os.path.exists(os.path.join(output_path, "hessian.csv")):
-		hessian = np.loadtxt(os.path.join(output_path, "hessian.csv"), delimiter=',')
+	if not recompute_hessian and os.path.exists(os.path.join(checkpoint_path, "hessian.csv")):
+		hessian = np.loadtxt(os.path.join(checkpoint_path, "hessian.csv"), delimiter=',')
 		I = torch.from_numpy(hessian).double()
 
 	#res_beta, hessian = inference_beta(model, var, w1, w0, config["x_map"])
@@ -412,9 +425,9 @@ def results(checkpoint_path, var, w1, w0, recompute_hessian):
 
 	#res_beta.to_csv(os.path.join(output_path, "nbsr_results.csv"), index=False)
 	if recompute_hessian:
-		np.savetxt(os.path.join(output_path, "hessian.csv"), I, delimiter=',')
-	np.savetxt(os.path.join(output_path, "nbsr_logRR.csv"), logRR, delimiter=',')
-	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
+		np.savetxt(os.path.join(checkpoint_path, "hessian.csv"), I, delimiter=',')
+	np.savetxt(os.path.join(checkpoint_path, "nbsr_logRR.csv"), logRR, delimiter=',')
+	np.savetxt(os.path.join(checkpoint_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(train)
 cli.add_command(resume)
