@@ -38,7 +38,7 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 		return False	
 	
 def compute_observed_information(model):
-	print("Computeing Hessian...")
+	print("Computing Hessian...")
 	log_post_grad = model.log_posterior_gradient(model.beta)
 	gradient_matrix = torch.zeros(log_post_grad.size(0), model.beta.size(0))
 	# Compute the gradient for each component of log_post_grad w.r.t. beta
@@ -209,11 +209,12 @@ def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	# We will store the best solution.
 	best_model_state = None
 	best_loss = torch.inf
+
 	for i in range(iterations):
 
 		loss = -model.log_posterior(model.beta)
 		optimizer.zero_grad()
-		loss.backward(retain_graph=True)
+		loss.backward(retain_graph=False)
 		optimizer.step()
 
 		loss_history.append(loss.data.numpy())
@@ -243,8 +244,6 @@ def construct_model(config):
 	dispersion_model = config["dispersion_model"]
 	config["x_map"] = x_map
 	#config["z_map"] = z_map
-
-	# Construct Gaussian RBF prior on the dispersion parameter if grbf is specified.
 
 	print("Y: ", Y.shape)
 	print("X: ", X.shape)
@@ -298,7 +297,6 @@ def run(state_dict, iterations, tol, lookback_iterations):
 		curr_best_model_state = checkpoint['best_model_state_dict']
 	else:
 		optimizer = torch.optim.Adam(model.parameters(), lr = lr)
-		optimizer_grbf = None
 		curr_loss_history = []
 		curr_best_loss = torch.inf
 		curr_best_model_state = None
@@ -313,7 +311,6 @@ def run(state_dict, iterations, tol, lookback_iterations):
         	'model_state_dict': model.state_dict(),
 	        'best_model_state_dict': curr_best_model_state,
 	        'optimizer_state_dict': optimizer.state_dict(),
-			'optimizer_grbf_state_dict': optimizer_grbf.state_dict() if optimizer_grbf else None,
 	        'loss': curr_loss_history,
 	        'best_loss': curr_best_loss,
 	        'converged': converged
@@ -339,9 +336,9 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	print("Training iterations completed.")
 	print("Converged? " + str(converged))
 
-def get_config(data_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, pivot):
+def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, pivot):
 	config = {
-		"output_path": data_path,
+		"output_path": output_path,
 		"counts_path": os.path.join(data_path, "Y.csv"),
 		"coldata_path": os.path.join(data_path, "X.csv"),
 		"dispersion_path": os.path.join(data_path, "dispersion.csv"),
@@ -364,18 +361,21 @@ def get_config(data_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dis
 @click.option('-i', '--iterations', default=1000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('-L', '--logistic_max', default=0.2, type=float, help="ZINBSR max value for logistic function.")
+@click.option('-r', '--runs', default=1, type= int, help="Number of optimization runs (initialization).")
 @click.option('--z_columns', multiple=True, help="Enter list of strings specifying the covariate names to use for zero inflation.")
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
 @click.option('--dispersion_model', is_flag=True, show_default=True, default=False, type=bool)
-@click.option('--pivot', default=False, type=bool)
+@click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, logistic_max, z_columns, lam, shape, scale, dispersion_model, pivot, tol, lookback_iterations):
-	config = get_config(data_path, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, pivot)
-	state = {"config": config}
-	run(state, iterations, tol, lookback_iterations)
+def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, pivot, tol, lookback_iterations):
+	for run_no in range(runs):
+		outpath = os.path.join(data_path, "run" + str(run_no))
+		config = get_config(data_path, outpath, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, pivot)
+		state = {"config": config}
+		run(state, iterations, tol, lookback_iterations)
 
 @click.command()
 @click.argument('checkpoint_path', type=click.Path(exists=True))
