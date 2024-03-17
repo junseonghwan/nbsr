@@ -125,11 +125,11 @@ def inference_beta(model, var, w1, w0, x_map, I=None):
 	# Create a data frame with the results.
 	res = pd.DataFrame()
 	# First column is the variable name.
-	res["features"] = model.Y_df.index.to_list()
+	#res["features"] = model.Y_df.index.to_list()
 	# Second column is the log2 fold change.
 	res["diff"] = diff
 	# Third column is the standard error.
-	res["stdErr"] = std_err/np.log(2)
+	res["stdErr"] = std_err
 	# Fourth column is the z-score.
 	res["stat"] = diff / std_err
 	# Fifth column is the p-value.
@@ -420,10 +420,10 @@ def results(checkpoint_path, var, w1, w0, recompute_hessian):
 		hessian = np.loadtxt(os.path.join(checkpoint_path, "hessian.csv"), delimiter=',')
 		I = torch.from_numpy(hessian).double()
 
-	#res_beta, hessian = inference_beta(model, var, w1, w0, config["x_map"])
-	logRR, logRR_std, I  = inference_logRR(model, var, w1, w0, config["x_map"], I)
+	res_beta, I = inference_beta(model, var, w1, w0, config["x_map"])
+	logRR, logRR_std,_  = inference_logRR(model, var, w1, w0, config["x_map"], I)
 
-	#res_beta.to_csv(os.path.join(output_path, "nbsr_results.csv"), index=False)
+	res_beta.to_csv(os.path.join(checkpoint_path, "nbsr_results.csv"), index=False)
 	if recompute_hessian:
 		np.savetxt(os.path.join(checkpoint_path, "hessian.csv"), I, delimiter=',')
 	np.savetxt(os.path.join(checkpoint_path, "nbsr_logRR.csv"), logRR, delimiter=',')
