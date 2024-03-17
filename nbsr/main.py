@@ -56,7 +56,7 @@ def compute_observed_information(model):
 
 	return -gradient_matrix
 
-def inference_beta(model, var, w1, w0, x_map, S=None):
+def inference_beta(model, var, w1, w0, x_map, I=None):
 	"""
 	Compute inference statistics for contrasting two levels for a given variable of interest.
 	Note: w0 corresponds to the denominator in the log ratio while w1 corresponds to the numerator.
@@ -89,9 +89,9 @@ def inference_beta(model, var, w1, w0, x_map, S=None):
 	# Compute observed information matrix.
 	# Compute (pseudo) inverse of observed Fisher information matrix to get covariance matrix.
 	# Compute standard errors.
-	if S is None:
+	if I is None:
 		I = compute_observed_information(model)
-		S = torch.linalg.pinv(I)
+	S = torch.linalg.pinv(I)
 
 	std_err_reshaped = reshape(model, torch.sqrt(torch.diag(S))).data.numpy()
 	beta_reshaped = get_beta(model).data.numpy()
