@@ -1,10 +1,10 @@
 import torch
 
-from nbsr.distributions import log_negbinomial, log_normal
+from nbsr.distributions import log_negbinomial, log_normal, softplus_inv
 
 # Model for dispersion parameters of the NBSR.
 class DispersionModel(torch.nn.Module):
-    def __init__(self, Y, Z = None):
+    def __init__(self, Y, Z = None, estimate_sd=False):
         super().__init__()
         self.softplus = torch.nn.Softplus()
         self.Y = Y
@@ -32,10 +32,14 @@ class DispersionModel(torch.nn.Module):
         else:
             self.covariate_count = Z.shape[1]
             self.beta = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
-        # softplus(self.psi) to get tau -- we will put this back when we implement sampling feature.
-        #self.psi = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
+        
+        self.estimate_sd = True
+        if estimate_sd:
+            # sd = softplus(self.tau)
+            self.tau = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
+            self.std_normal = torch.distributions.Normal(loc=0., scale=1.)
 
-    def forward(self, log_pi):
+    def forward(self, log_pi, sample=False):
         # log_pi has shape (self.sample_count, self.feature_count)
         #assert(log_pi.shape[0] == self.sample_count)
         #assert(log_pi.shape[1] == self.feature_count)
@@ -48,8 +52,14 @@ class DispersionModel(torch.nn.Module):
             val3 = 0
         else:
             val3 = torch.mm(self.Z, self.beta.unsqueeze(-1)).expand(-1, self.feature_count)
-        log_phi = val0 + val1 + val2 + val3
-        return(log_phi)
+        log_phi_mean = val0 + val1 + val2 + val3
+        if sample and self.estimate_sd:
+            z = self.std_normal.sample((self.sample_count, self.feature_count))
+            sd = self.softplus(self.tau)
+            log_phi = log_phi_mean + z * sd
+            return(log_phi)
+        else:
+            return(log_phi_mean)
 
     # log P(Y | \mu, dispersion) + log P(dispersion | \theta)
     def log_posterior(self, pi):

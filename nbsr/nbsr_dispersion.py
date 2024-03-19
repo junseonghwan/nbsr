@@ -14,10 +14,11 @@ from nbsr.dispersion import DispersionModel
 # This model extends the basic NBSR model with dispersion
 class NBSRDispersion(NegativeBinomialRegressionModel):
 
-    def __init__(self, X, Y, Z=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, Z=None, prior_sd=None, estimate_dispersion_sd=False, pivot=False):
         super().__init__(X, Y, None, None, prior_sd, pivot)
         self.Z = Z
-        self.disp_model = DispersionModel(self.Y, self.Z)
+        self.estimate_dispersion_sd = estimate_dispersion_sd
+        self.disp_model = DispersionModel(self.Y, self.Z, estimate_sd=estimate_dispersion_sd)
 
     def log_likelihood(self, mu, phi):
         # Define log_liklihood that uses the new architecture.
@@ -28,7 +29,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(log_pi, self.estimate_dispersion_sd))
 
         # Compute the log likelihood of Y
         log_lik = self.log_likelihood(mu, phi)
@@ -52,7 +53,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(log_pi, self.estimate_dispersion_sd))
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
         return log_lik_vals.sum()
 
@@ -70,7 +71,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         #beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         pi,_ = self.predict(beta, self.X)
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(log_pi, self.estimate_dispersion_sd))
         J = self.rna_count
 
         grad = torch.zeros(self.sample_count, self.dim * self.covariate_count)

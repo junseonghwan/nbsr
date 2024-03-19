@@ -38,7 +38,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
         if prior_sd is None:
             #self.psi = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
-            self.psi = torch.nn.Parameter(torch.ones(self.covariate_count, dtype=torch.float64), requires_grad=True)
+            self.psi = torch.nn.Parameter(softplus_inv(torch.ones(self.covariate_count, dtype=torch.float64)), requires_grad=True)
         else:
             self.psi = softplus_inv(torch.tensor(prior_sd))
 
