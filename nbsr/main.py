@@ -10,6 +10,7 @@ import torch
 
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.nbsr_dispersion import NBSRDispersion
+from nbsr.dispersion import DispersionModel
 from nbsr.zinbsr import ZINBSR
 from nbsr.utils import *
 
@@ -260,7 +261,8 @@ def construct_model(config):
 		print("prior_sd unspecified and will be estimated.")
 
 	if dispersion_model:
-		model = NBSRDispersion(X, Y, prior_sd=prior_sd, pivot=config["pivot"])
+		disp_model = DispersionModel(Y, feature_specific_intercept=config["feature_specific_intercept"], estimate_sd=config["estimate_dispersion_sd"])
+		model = NBSRDispersion(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
 	elif dispersion_model:
 		model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	# else:
@@ -328,6 +330,8 @@ def run(state_dict, iterations, tol, lookback_iterations):
 		np.savetxt(os.path.join(output_path, "nbsr_zinb_coef.csv"), model.b.data.numpy().transpose(), delimiter=',')
 	if isinstance(model, NBSRDispersion):
 		phi = torch.exp(model.disp_model(torch.log(pi)))
+		if config["estimate_dispersion_sd"]:
+			np.savetxt(os.path.join(output_path, "nbsr_dispersion_sd.csv"), model.disp_model.softplus(model.disp_model.tau).data.numpy().transpose(), delimiter=',')
 
 	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
@@ -338,7 +342,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	print("Converged? " + str(converged))
 	return(curr_best_loss)
 
-def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, pivot):
+def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot):
 	config = {
 		"output_path": output_path,
 		"counts_path": os.path.join(data_path, "Y.csv"),
@@ -353,6 +357,8 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 		"shape": shape,
 		"scale": scale,
 		"dispersion_model": dispersion_model,
+		"estimate_dispersion_sd": estimate_dispersion_sd,
+		"feature_specific_intercept": feature_specific_intercept,
 		"pivot": pivot
 	}
 	return config
@@ -369,14 +375,16 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
 @click.option('--dispersion_model', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
+@click.option('--feature_specific_intercept', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, pivot, tol, lookback_iterations):
+def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, tol, lookback_iterations):
 	losses = []
 	for run_no in range(runs):
 		outpath = os.path.join(data_path, "run" + str(run_no))
-		config = get_config(data_path, outpath, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, pivot)
+		config = get_config(data_path, outpath, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot)
 		state = {"config": config}
 		loss = run(state, iterations, tol, lookback_iterations)
 		losses.append(loss)

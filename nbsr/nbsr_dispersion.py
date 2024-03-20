@@ -14,11 +14,12 @@ from nbsr.dispersion import DispersionModel
 # This model extends the basic NBSR model with dispersion
 class NBSRDispersion(NegativeBinomialRegressionModel):
 
-    def __init__(self, X, Y, Z=None, prior_sd=None, estimate_dispersion_sd=False, pivot=False):
+    def __init__(self, X, Y, disp_model, Z=None, prior_sd=None, pivot=False):
         super().__init__(X, Y, None, None, prior_sd, pivot)
         self.Z = Z
-        self.estimate_dispersion_sd = estimate_dispersion_sd
-        self.disp_model = DispersionModel(self.Y, self.Z, estimate_sd=estimate_dispersion_sd)
+        #self.estimate_dispersion_sd = estimate_dispersion_sd
+        #self.disp_model = DispersionModel(self.Y, self.Z, estimate_sd=estimate_dispersion_sd)
+        self.disp_model = disp_model
 
     def log_likelihood(self, mu, phi):
         # Define log_liklihood that uses the new architecture.
@@ -29,7 +30,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi, self.estimate_dispersion_sd))
+        phi = torch.exp(self.disp_model.forward(log_pi))
 
         # Compute the log likelihood of Y
         log_lik = self.log_likelihood(mu, phi)
@@ -39,9 +40,10 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         log_beta_prior = self.log_beta_prior(beta)
         # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
         log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
-        log_dispersion_prior = 0
-        if self.dispersion_prior is not None:
-            log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(torch.log(phi), torch.mean(mu, 0)))
+        # log_dispersion_prior = 0
+        # if self.dispersion_prior is not None:
+        #     log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(torch.log(phi), torch.mean(mu, 0)))
+        log_dispersion_prior = self.disp_model.log_prior()
         log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return log_posterior
     
@@ -53,7 +55,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi, self.estimate_dispersion_sd))
+        phi = torch.exp(self.disp_model.forward(log_pi))
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
         return log_lik_vals.sum()
 
@@ -71,7 +73,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         #beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         pi,_ = self.predict(beta, self.X)
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi, self.estimate_dispersion_sd))
+        phi = torch.exp(self.disp_model.forward(log_pi))
         J = self.rna_count
 
         grad = torch.zeros(self.sample_count, self.dim * self.covariate_count)
