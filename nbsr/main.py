@@ -144,9 +144,6 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 		I = compute_observed_information(model)
 	
 	S = torch.linalg.pinv(I)
-	var = "trt"
-	w0 = "null"
-	w1 = "alt"
 	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
 	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
 	col_idx0 = x_map[var_level0] if var_level0 in x_map else None
@@ -325,13 +322,17 @@ def run(state_dict, iterations, tol, lookback_iterations):
 
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.beta, model.X)
-	phi = model.softplus(model.phi)
 	if isinstance(model, ZINBSR):
 		np.savetxt(os.path.join(output_path, "nbsr_zinb_coef.csv"), model.b.data.numpy().transpose(), delimiter=',')
 	if isinstance(model, NBSRDispersion):
 		phi = torch.exp(model.disp_model(torch.log(pi)))
+		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b0.csv"), model.disp_model.b0.data.numpy().transpose(), delimiter=',')
+		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b1.csv"), model.disp_model.b1.data.numpy().transpose(), delimiter=',')
+		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b2.csv"), model.disp_model.b2.data.numpy().transpose(), delimiter=',')
 		if config["estimate_dispersion_sd"]:
 			np.savetxt(os.path.join(output_path, "nbsr_dispersion_sd.csv"), model.disp_model.softplus(model.disp_model.tau).data.numpy().transpose(), delimiter=',')
+	else:
+		phi = model.softplus(model.phi)
 
 	np.savetxt(os.path.join(output_path, "nbsr_beta.csv"), model.beta.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_beta_sd.csv"), model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
@@ -377,10 +378,11 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 @click.option('--dispersion_model', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--feature_specific_intercept', is_flag=True, show_default=False, default=False, type=bool)
+@click.option('--output_path', default=None, type=str)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, tol, lookback_iterations):
+def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, output_path, pivot, tol, lookback_iterations):
 	losses = []
 	for run_no in range(runs):
 		outpath = os.path.join(data_path, "run" + str(run_no))
@@ -418,6 +420,8 @@ def results(checkpoint_path, var, w1, w0, recompute_hessian):
 	config = state_dict["config"]
 	#output_path = config["output_path"]
 	#create_directory(output_path)
+	print(config["x_map"])
+	#import pdb; pdb.set_trace()
 
 	model, _ = load_model_from_state_dict(state_dict, config)
 

@@ -20,6 +20,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         #self.estimate_dispersion_sd = estimate_dispersion_sd
         #self.disp_model = DispersionModel(self.Y, self.Z, estimate_sd=estimate_dispersion_sd)
         self.disp_model = disp_model
+        self.phi = None
 
     def log_likelihood(self, mu, phi):
         # Define log_liklihood that uses the new architecture.

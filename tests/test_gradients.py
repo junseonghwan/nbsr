@@ -6,6 +6,7 @@ import torch
 
 import nbsr.negbinomial_model as nbm
 import nbsr.nbsr_dispersion as nbsrd
+import nbsr.dispersion as dm
 
 def generate_data(d, N, J):
     # Generate data for testing.
@@ -156,7 +157,9 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
     
-        model = nbsrd.NBSRDispersion(torch.tensor(X), torch.tensor(Y))
+        tensorY = torch.tensor(Y)
+        disp_model = dm.DispersionModel(tensorY)
+        model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model)
         z = model.log_likelihood2(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
@@ -173,7 +176,9 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
     
-        model = nbsrd.NBSRDispersion(torch.tensor(X), torch.tensor(Y))
+        tensorY = torch.tensor(Y)
+        disp_model = dm.DispersionModel(tensorY)
+        model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model)
         model.specify_beta_prior(1, 3, 2)
         z = model.log_posterior(model.beta)
         if model.beta.grad is not None:

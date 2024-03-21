@@ -43,7 +43,7 @@ class DispersionModel(torch.nn.Module):
             self.tau = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
             self.std_normal = torch.distributions.Normal(loc=0., scale=1.)
 
-    def forward(self, log_pi, sample=False):
+    def forward(self, log_pi):
         # log_pi has shape (self.sample_count, self.feature_count)
         #assert(log_pi.shape[0] == self.sample_count)
         #assert(log_pi.shape[1] == self.feature_count)
@@ -59,13 +59,12 @@ class DispersionModel(torch.nn.Module):
         else:
             val3 = torch.mm(self.Z, self.beta.unsqueeze(-1)).expand(-1, self.feature_count)
         log_phi_mean = val0 + val1 + val2 + val3
-        if sample and self.estimate_sd:
-            z = self.std_normal.sample((self.sample_count, self.feature_count))
-            sd = self.softplus(self.tau)
-            log_phi = log_phi_mean + z * sd
-            return(log_phi)
-        else:
-            return(log_phi_mean)
+        # if not predict and self.estimate_sd:
+        #     z = self.std_normal.sample((self.sample_count, self.feature_count))
+        #     sd = self.softplus(self.tau)
+        #     log_phi = log_phi_mean + z * sd
+        #     return(log_phi)            
+        return(log_phi_mean)
         
     def log_prior(self):
         log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(1.)).sum()
