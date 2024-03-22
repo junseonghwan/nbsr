@@ -67,9 +67,9 @@ class DispersionModel(torch.nn.Module):
         return(log_phi_mean)
         
     def log_prior(self):
-        log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(1.)).sum()
-        log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(1.))
-        log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(1.))
+        log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(0.1)).sum()
+        log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(0.1))
+        log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(0.1))
         log_prior = log_prior0 + log_prior1 + log_prior2
         return log_prior.sum()
 
