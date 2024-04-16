@@ -11,8 +11,11 @@ import torch
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.nbsr_dispersion import NBSRDispersion
 from nbsr.dispersion import DispersionModel
+from nbsr.nbsr_eb import NBSREmpiricalBayes
 from nbsr.zinbsr import ZINBSR
+from nbsr.grbf import GaussianRBF, evaluate_mean
 from nbsr.utils import *
+from nbsr.distributions import softplus
 
 torch.set_default_dtype(torch.float64)
 torch.set_printoptions(precision=9)
@@ -367,7 +370,69 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
-@click.option('-i', '--iterations', default=1000, type=int)
+@click.option('--nbsr_iter', default=5000, type=int, help="NBSR dispersion model training iterations.")
+@click.option('--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
+@click.option('--grbf_iter', default=5000, type=int, help="GRBF model training iterations.")
+@click.option('--grbf_lr', default=0.05, type=float, help="GRBF model parameters learning rate.")
+@click.option('--knot_count', default=10, type=int, help="GRBF model number of knots.")
+@click.option('--grbf_sd', default=0.5, type=float, help="GRBF model standard deviation parameter.")
+def eb(data_path, vars, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf_sd):
+	# Read in the mean expression.
+	# Optimize NBSREmpiricalBayes to get MLE dispersions.
+	# Fit GRBF with phi_mle ~ f(mu_bar).
+	# Obtain the mean dispersion and use it for fitting NBSR and output it to file.
+	print("Performing Empirical Bayes estimation of dispersion.")
+	column_names = list(vars)
+	deseq2_mu = pd.read_csv(os.path.join(data_path, "deseq2_mu.csv"))
+	deseq2_mu = torch.tensor(deseq2_mu.transpose().to_numpy())
+	counts_pd = pd.read_csv(os.path.join(data_path, "Y.csv"))
+	if os.path.exists(os.path.join(data_path, "X.csv")):
+		coldata_pd = pd.read_csv(os.path.join(data_path, "X.csv"), na_filter=False, skipinitialspace=True)
+	else:
+		coldata_pd = None
+	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
+	X,_ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
+	nbsr_eb_model = NBSREmpiricalBayes(X, Y, deseq2_mu)
+	optimizer = torch.optim.Adam(nbsr_eb_model.parameters(),lr=nbsr_lr)
+	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
+	for i in range(nbsr_iter):
+		loss = -nbsr_eb_model.log_likelihood()
+		optimizer.zero_grad()
+		loss.backward(retain_graph=True)
+		optimizer.step()
+		if i % 100 == 0:
+			print("Iter:", i)
+			print(loss.data)
+	phi_mle = softplus(nbsr_eb_model.phi)
+	mu_bar = torch.mean(deseq2_mu, 0)
+	log_mu_bar = torch.log(mu_bar)
+	min_val = torch.min(log_mu_bar.data)
+	max_val = torch.max(log_mu_bar.data)
+	grbf_model = GaussianRBF(min_val, max_val, sd=grbf_sd, knot_count=knot_count)
+	optimizer = torch.optim.Adam(grbf_model.parameters(),lr=grbf_lr)
+	grbf_model.log_density(phi_mle, mu_bar)
+	print("Optimizing GRBF model parameters.")
+	for i in range(grbf_iter):
+		loss = -grbf_model.log_density(phi_mle, mu_bar)
+		optimizer.zero_grad()
+		loss.backward(retain_graph=True)
+		optimizer.step()
+		if i % 100 == 0:
+			print("Iter:", i)
+			print(loss.data)
+	f_mean = evaluate_mean(mu_bar, grbf_model.beta, grbf_model.centers, grbf_model.h)[0]
+	mean_dispersion = torch.exp(f_mean)
+	np.savetxt(os.path.join(data_path, "eb_dispersion.csv"), phi_mle.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "dispersion.csv"), mean_dispersion.data.numpy().transpose(), delimiter=',')
+
+	torch.save({
+		'model_state': grbf_model.state_dict()
+        }, os.path.join(data_path, 'grbf_model.pth'))
+
+@click.command()
+@click.argument('data_path', type=click.Path(exists=True))
+@click.argument('vars', nargs=-1)
+@click.option('-i', '--iterations', default=10000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('-L', '--logistic_max', default=0.2, type=float, help="ZINBSR max value for logistic function.")
 @click.option('-r', '--runs', default=1, type= int, help="Number of optimization runs (initialization).")
@@ -378,11 +443,11 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 @click.option('--dispersion_model', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--feature_specific_intercept', is_flag=True, show_default=False, default=False, type=bool)
-@click.option('--output_path', default=None, type=str)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, output_path, pivot, tol, lookback_iterations):
+def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, tol, lookback_iterations):
+
 	losses = []
 	for run_no in range(runs):
 		outpath = os.path.join(data_path, "run" + str(run_no))
@@ -412,8 +477,8 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.command()
 @click.argument('checkpoint_path', type=click.Path(exists=True))
 @click.argument('var', type=str)
-@click.argument('w1', type=str)
-@click.argument('w0', type=str)
+@click.argument('w1', type=str) # "level to be used on the numerator"
+@click.argument('w0', type=str) # "level to be used on the denominator"
 @click.option('--recompute_hessian', is_flag=True, show_default=True, default=True, type=bool)
 def results(checkpoint_path, var, w1, w0, recompute_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
@@ -441,6 +506,7 @@ def results(checkpoint_path, var, w1, w0, recompute_hessian):
 	np.savetxt(os.path.join(checkpoint_path, "nbsr_logRR.csv"), logRR, delimiter=',')
 	np.savetxt(os.path.join(checkpoint_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
+cli.add_command(eb)
 cli.add_command(train)
 cli.add_command(resume)
 cli.add_command(results)

@@ -30,11 +30,11 @@ def log_invgamma(x, alpha, beta):
     log_prob = log_term1 + log_term2 + log_term3 + log_term4
     return log_prob
 
-# Let's optimize for beta.
 def log_normal(x, mu, std):
-    """Compute the log pdf of x,
-    under a lognormal distribution with mean mu and standard deviation std."""
-    return -0.5 * torch.log(2*torch.pi*(std**2)) - (0.5 * ((x-mu)/std)**2)
+    return -torch.log(2*torch.pi*(std**2)) - (0.5 * ((x-mu)/std)**2)
+
+def log_lognormal(x, mu, std):
+    return -torch.log(x * torch.sqrt(2*torch.pi*(std**2))) - (0.5*((torch.log(x) - mu)/std)**2)
 
 def softplus_inv(y):
     return y + y.neg().expm1().neg().log()

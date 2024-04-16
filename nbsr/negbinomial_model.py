@@ -7,12 +7,13 @@ from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softpl
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
-    def __init__(self, X, Y, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, mu_bar=None, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
         super().__init__()
         assert(isinstance(X, torch.Tensor))
         assert(isinstance(Y, torch.Tensor))
         self.X = X
         self.Y = Y
+        self.mu_bar = mu_bar
         self.s = torch.sum(self.Y, dim=1)  # Summing over rows
         self.pivot = pivot
         self.softplus = torch.nn.Softplus()
@@ -33,7 +34,10 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         self.beta = torch.nn.Parameter(torch.zeros(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
         self.dispersion_prior = dispersion_prior
         if dispersion is None:
-            self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
+            if dispersion_prior is not None and mu_bar is not None:
+                self.phi = torch.nn.Parameter(softplus_inv(dispersion_prior.sample(mu_bar, torch.tensor(0.1))), requires_grad=True)
+            else:
+                self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
         if prior_sd is None:
@@ -102,12 +106,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_beta_prior = self.log_beta_prior(beta)
         # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
         log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
-        norm_expr, _ = self.predict(beta, self.X)
-        mu = self.s[:, None] * norm_expr
-        #phi_sd = softplus(self.dispersion_prior.psi)
         log_dispersion_prior = 0
         if self.dispersion_prior is not None:
-            log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(torch.log(dispersion), torch.mean(mu, 0)))
+            log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(dispersion, self.mu_bar))
         log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return(log_posterior)
 

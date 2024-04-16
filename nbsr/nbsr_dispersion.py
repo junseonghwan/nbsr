@@ -15,7 +15,7 @@ from nbsr.dispersion import DispersionModel
 class NBSRDispersion(NegativeBinomialRegressionModel):
 
     def __init__(self, X, Y, disp_model, Z=None, prior_sd=None, pivot=False):
-        super().__init__(X, Y, None, None, prior_sd, pivot)
+        super().__init__(X, Y, None, None, None, prior_sd, pivot)
         self.Z = Z
         #self.estimate_dispersion_sd = estimate_dispersion_sd
         #self.disp_model = DispersionModel(self.Y, self.Z, estimate_sd=estimate_dispersion_sd)
@@ -41,9 +41,6 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         log_beta_prior = self.log_beta_prior(beta)
         # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
         log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
-        # log_dispersion_prior = 0
-        # if self.dispersion_prior is not None:
-        #     log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(torch.log(phi), torch.mean(mu, 0)))
         log_dispersion_prior = self.disp_model.log_prior()
         log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return log_posterior
