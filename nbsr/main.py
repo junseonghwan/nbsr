@@ -145,7 +145,6 @@ def inference_beta(model, var, w1, w0, x_map, I=None):
 def inference_logRR(model, var, w1, w0, x_map, I = None):
 	if I is None:
 		I = compute_observed_information(model)
-	
 	S = torch.linalg.pinv(I)
 	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
 	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
@@ -479,14 +478,16 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.argument('var', type=str)
 @click.argument('w1', type=str) # "level to be used on the numerator"
 @click.argument('w0', type=str) # "level to be used on the denominator"
-@click.option('--recompute_hessian', is_flag=True, show_default=True, default=True, type=bool)
-def results(checkpoint_path, var, w1, w0, recompute_hessian):
+@click.option('--output_path', default=None, type=str)
+@click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--save_hessian', is_flag=True, show_default=True, default=False, type=bool)
+def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
 	config = state_dict["config"]
-	#output_path = config["output_path"]
-	#create_directory(output_path)
+	if output_path is None:
+		output_path = os.path.join(checkpoint_path, w1 + "_" + w0)
+	create_directory(output_path)
 	print(config["x_map"])
-	#import pdb; pdb.set_trace()
 
 	model, _ = load_model_from_state_dict(state_dict, config)
 
@@ -497,14 +498,15 @@ def results(checkpoint_path, var, w1, w0, recompute_hessian):
 		hessian = np.loadtxt(os.path.join(checkpoint_path, "hessian.csv"), delimiter=',')
 		I = torch.from_numpy(hessian).double()
 
-	res_beta, I = inference_beta(model, var, w1, w0, config["x_map"])
+	res_beta, I = inference_beta(model, var, w1, w0, config["x_map"], I)
 	logRR, logRR_std,_  = inference_logRR(model, var, w1, w0, config["x_map"], I)
 
 	res_beta.to_csv(os.path.join(checkpoint_path, "nbsr_results.csv"), index=False)
-	if recompute_hessian:
+	# Save Hessian for future use.
+	if save_hessian:
 		np.savetxt(os.path.join(checkpoint_path, "hessian.csv"), I, delimiter=',')
-	np.savetxt(os.path.join(checkpoint_path, "nbsr_logRR.csv"), logRR, delimiter=',')
-	np.savetxt(os.path.join(checkpoint_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_logRR.csv"), logRR, delimiter=',')
+	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(eb)
 cli.add_command(train)
