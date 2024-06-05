@@ -464,6 +464,12 @@ def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, s
 			# Copy each file to data_path
 			shutil.copy2(file_path, os.path.join(data_path, filename))
 
+	# Obtain Hessian matrix.
+	state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
+	model, _ = load_model_from_state_dict(state_dict, config)
+	I = compute_observed_information(model)
+	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
+
 @click.command()
 @click.argument('checkpoint_path', type=click.Path(exists=True))
 @click.option('-i', '--iterations', default=1000, type=int)
