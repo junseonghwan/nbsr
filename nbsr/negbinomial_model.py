@@ -35,7 +35,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         self.dispersion_prior = dispersion_prior
         if dispersion is None:
             if dispersion_prior is not None and mu_bar is not None:
-                self.phi = torch.nn.Parameter(softplus_inv(dispersion_prior.sample(mu_bar, torch.tensor(0.1))), requires_grad=True)
+                self.phi = torch.nn.Parameter(softplus_inv(dispersion_prior.sample(mu_bar)), requires_grad=True)
             else:
                 self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:

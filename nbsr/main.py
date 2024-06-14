@@ -263,7 +263,24 @@ def construct_model(config):
 		disp_model = DispersionModel(Y, feature_specific_intercept=config["feature_specific_intercept"], estimate_sd=config["estimate_dispersion_sd"])
 		model = NBSRDispersion(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
 	else:
-		model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
+		if config["grbf"]:
+			# load GRBF model.
+			data_path = config["data_path"]
+			deseq2_path = os.path.join(data_path, "deseq2_mu.csv")
+			if not os.path.exists(deseq2_path):
+				print(f"DESeq2 mean expression file not available on {deseq2_path}. Terminating program...")
+				sys.exit()
+			deseq2_mu = pd.read_csv(os.path.join(data_path, "deseq2_mu.csv"))
+			deseq2_mu = torch.tensor(deseq2_mu.transpose().to_numpy())
+			mu_bar = torch.mean(deseq2_mu, 0)
+			grbf_model_path = os.path.join(data_path, 'grbf_model.pth')
+			if not os.path.exists(grbf_model_path):
+				print(f"GRBF model is not available on {grbf_model_path}. Terminating program...")
+				sys.exit()
+			grbf_model = torch.load(os.path.join(data_path, 'grbf_model.pth'))
+			model = NegativeBinomialRegressionModel(X, Y, mu_bar=mu_bar, dispersion_prior=grbf_model, dispersion=None, prior_sd=prior_sd, pivot=config["pivot"])
+		else:
+			model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	# else:
 	# 	model = ZINBSR(X, Y, Z, config["logistic_max"], dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
@@ -345,8 +362,9 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	print("Converged? " + str(converged))
 	return(curr_best_loss)
 
-def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot):
+def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, grbf):
 	config = {
+		"data_path": data_path,
 		"output_path": output_path,
 		"counts_path": os.path.join(data_path, "Y.csv"),
 		"coldata_path": os.path.join(data_path, "X.csv"),
@@ -362,7 +380,8 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 		"dispersion_model": dispersion_model,
 		"estimate_dispersion_sd": estimate_dispersion_sd,
 		"feature_specific_intercept": feature_specific_intercept,
-		"pivot": pivot
+		"pivot": pivot,
+		"grbf": grbf
 	}
 	return config
 
@@ -423,10 +442,11 @@ def eb(data_path, vars, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf
 	mean_dispersion = torch.exp(f_mean)
 	np.savetxt(os.path.join(data_path, "eb_dispersion.csv"), phi_mle.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "dispersion.csv"), mean_dispersion.data.numpy().transpose(), delimiter=',')
-
-	torch.save({
-		'model_state': grbf_model.state_dict()
-        }, os.path.join(data_path, 'grbf_model.pth'))
+	
+	torch.save(grbf_model, os.path.join(data_path, 'grbf_model.pth'))
+	# torch.save({
+	# 	'model_state': grbf_model.state_dict()
+    #     }, os.path.join(data_path, 'grbf_model.pth'))
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
@@ -443,14 +463,15 @@ def eb(data_path, vars, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--feature_specific_intercept', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--grbf', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, tol, lookback_iterations):
+def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, grbf, tol, lookback_iterations):
 
 	losses = []
 	for run_no in range(runs):
 		outpath = os.path.join(data_path, "run" + str(run_no))
-		config = get_config(data_path, outpath, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot)
+		config = get_config(data_path, outpath, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, grbf)
 		state = {"config": config}
 		loss = run(state, iterations, tol, lookback_iterations)
 		losses.append(loss)
