@@ -37,7 +37,7 @@ pytest tests/
 The required arguments are (1) path to directory containing `X.csv` and `Y.csv` and (2) a list of explanatory variable names (covariates) separated by space matching the column names in `X.csv`.
 
 ```
-python nbsr/main.py train path/to/data var1 var2 var3
+python nbsr/main.py train /path/to/data var1 var2 var3
 ```
 
 Optional arguments:
@@ -65,7 +65,7 @@ This requires [R installation](https://www.r-project.org/) with [DESeq2 package 
 Then, run NBSR EB:
 
 ```
-python nbsr/main.py eb path/to/data var1 var2 var3
+python nbsr/main.py eb /path/to/data var1 var2 var3
 ```
 
 with optional arguments:
@@ -82,30 +82,45 @@ with optional arguments:
 Finally, we can fit NBSR with the prior on dispersion specified using GRBF by setting the `--grbf` flag: 
 
 ```
-python nbsr/main.py train path/to/data var1 var2 var3 --grbf
+python nbsr/main.py train /path/to/data var1 var2 var3 --grbf
 ```
 
 Note that if `--dispersion_model` flag is set, then `--grbf` flag will be ignored. 
 
 Refer to script `run_nbsr_eb.sh`, which streamlines the process of running NBSR with GRBF dispersion prior.
 
+Running NBSR's `train` will generate a checkpoint file in the same path where the data resides (i.e., `/path/to/data`).
+
+Finally, to perform inference to compare two experimental conditions say on `var1` with `level1` (numerator) and `level2` (denominator):
+
+```
+python nbsr/main.py results /path/to/data var1 level1 level2
+```
+
+The above command will create a directory `/path/to/data/level1_level2` and generate result files.
+
 ## Example
 
-A test dataset can be found in `data/test`. The code for generating a test data can be found in `scripts/generate_data.R`. Run NBSR on the test data via command:
+A test dataset can be found in `data/test`. This dataset contains one covariate `trt` (treatment) with levels `null` and `alt` with `n=10` for each of the two conditions. The code for generating this test data can be found in `scripts/generate_data.R`. 
+
+We will run NBSR on the test data via command:
 
 ```
 python nbsr/main.py train data/test/ trt -i 20000 --dispersion_model --feature_specific_intercept
 ```
 
-or with fixed dispersion,
+Then, to compare two treatment levels with `alt` in the numerator:
 
 ```
-python nbsr/main.py train data/test/ trt -i 20000 
+python nbsr/main.py results data/test trt alt null
 ```
+
 
 ## Analysis
 
 While we are working on developing an R package to interface with Python code, we suggest to run NBSR on command line and load the results in R for analysis. An example script for performing differential expression analysis is given in `scripts/de.R`.
+
+Further information will be provided once we develop an R package.
 
 ## Citation
 
