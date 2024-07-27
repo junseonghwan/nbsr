@@ -94,13 +94,13 @@ Refer to script `run_nbsr_eb.sh`, which streamlines the process of running NBSR 
 A test dataset can be found in `data/test`. The code for generating a test data can be found in `scripts/generate_data.R`. Run NBSR on the test data via command:
 
 ```
-python nbsr/main.py train data/test/ trt
+python nbsr/main.py train data/test/ trt -i 20000 --dispersion_model --feature_specific_intercept
 ```
 
-or
+or with fixed dispersion,
 
 ```
-python nbsr/main.py train data/test/ trt --dispersion_model --feature_specific_intercept
+python nbsr/main.py train data/test/ trt -i 20000 
 ```
 
 ## Analysis
