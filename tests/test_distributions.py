@@ -13,6 +13,8 @@ class TestDistributions(unittest.TestCase):
         sd = torch.tensor([0.1, 0.2, 0.3])
         log_normal_realized = torch.sum(dist.log_normal(beta, torch.zeros_like(sd), sd))
         log_normal_expected = -127.5039
+        print(log_normal_expected)
+        print(log_normal_realized)
         self.assertTrue(np.allclose(log_normal_expected, log_normal_realized))
 
 if __name__ == '__main__':

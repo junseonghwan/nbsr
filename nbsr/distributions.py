@@ -31,7 +31,7 @@ def log_invgamma(x, alpha, beta):
     return log_prob
 
 def log_normal(x, mu, std):
-    return -torch.log(2*torch.pi*(std**2)) - (0.5 * ((x-mu)/std)**2)
+    return -torch.log(torch.sqrt(2*torch.pi*(std**2))) - (0.5 * ((x-mu)/std)**2)
 
 def log_lognormal(x, mu, std):
     return -torch.log(x * torch.sqrt(2*torch.pi*(std**2))) - (0.5*((torch.log(x) - mu)/std)**2)

@@ -14,11 +14,8 @@ from nbsr.dispersion import DispersionModel
 # This model extends the basic NBSR model with dispersion
 class NBSRDispersion(NegativeBinomialRegressionModel):
 
-    def __init__(self, X, Y, disp_model, Z=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, disp_model, prior_sd=None, pivot=False):
         super().__init__(X, Y, None, None, None, prior_sd, pivot)
-        self.Z = Z
-        #self.estimate_dispersion_sd = estimate_dispersion_sd
-        #self.disp_model = DispersionModel(self.Y, self.Z, estimate_sd=estimate_dispersion_sd)
         self.disp_model = disp_model
         self.phi = None
 

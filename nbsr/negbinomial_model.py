@@ -30,8 +30,8 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
 
         # The parameters we adjust during training.
         self.dim = self.rna_count - 1 if pivot else self.rna_count
-        #self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
-        self.beta = torch.nn.Parameter(torch.zeros(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
+        self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
+        #self.beta = torch.nn.Parameter(torch.zeros(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
         self.dispersion_prior = dispersion_prior
         if dispersion is None:
             if dispersion_prior is not None and mu_bar is not None:

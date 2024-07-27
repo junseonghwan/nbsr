@@ -57,7 +57,7 @@ Optional arguments:
 When the number of samples for each experimental condtion `>= 10`, we recommend to try `--dispersion_model` and to enable `--feature_specific_intercept` flag. To use `--grbf` prior on the dispersion parameters when fitting NBSR, we require to first run DESeq2 to obtain mean expression levels for each sample and feature and then to run NBSR with Empirical Bayes. NBSR EB will obtain MLE for dispersion given the mean expression levels followed by fitting GRBF prior on dispersion. To run DESeq2, use `deseq2.R`:
 
 ```
-Rscript deseq2.R /path/to/data var1,var2,var3
+Rscript scripts/deseq2.R /path/to/data var1,var2,var3
 ```
 
 This requires [R installation](https://www.r-project.org/) with [DESeq2 package installed](https://bioconductor.org/packages/release/bioc/html/DESeq2.html). `/path/to/data` should match the path containing the data files `X.csv` and `Y.csv`. Running `deseq2.R` will produce a file `/path/to/data/deseq2_mu.csv`.
@@ -89,4 +89,25 @@ Note that if `--dispersion_model` flag is set, then `--grbf` flag will be ignore
 
 Refer to script `run_nbsr_eb.sh`, which streamlines the process of running NBSR with GRBF dispersion prior.
 
+## Example
+
+A test dataset can be found in `data/test`. The code for generating a test data can be found in `scripts/generate_data.R`. Run NBSR on the test data via command:
+
+```
+python nbsr/main.py train data/test/ trt
+```
+
+or
+
+```
+python nbsr/main.py train data/test/ trt --dispersion_model --feature_specific_intercept
+```
+
+## Analysis
+
+While we are working on developing an R package to interface with Python code, we suggest to run NBSR on command line and load the results in R for analysis. An example script for performing differential expression analysis is given in `scripts/de.R`.
+
+## Citation
+
+If you use our package for analysis, please cite our paper doi: https://doi.org/10.1101/2024.05.07.592964.
 
