@@ -122,6 +122,8 @@ While we are working on developing an R package to interface with Python code, w
 
 Further information will be provided once we develop an R package.
 
+The figures from the paper can be reproduced by following the scripts provided [here](https://github.com/junseonghwan/nbsr-experiments/).
+
 ## Citation
 
 If you use our package for analysis, please cite our paper doi: https://doi.org/10.1101/2024.05.07.592964.
