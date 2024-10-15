@@ -6,9 +6,10 @@ setup(
     packages=find_packages(),
     install_requires=[
     'torch', 
-	'numpy', 
+	'numpy<2', 
 	'scipy', 
 	'pandas',
-    'click'
+    'click',
+    "setuptools"
     ],
 )
