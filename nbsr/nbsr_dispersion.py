@@ -66,34 +66,35 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
             torch.Tensor: A tensor of shape (sample_count, covariate_count * dim) containing the gradient of the log-likelihood function with respect to the model parameters for each sample.
         """        
         #beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-        pi,_ = self.predict(beta, self.X)
+        pi,_ = self.predict(beta, self.X) # N x K
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
-        J = self.rna_count
+        phi = torch.exp(self.disp_model.forward(log_pi)) # N x K
+        #J = self.rna_count-1 if self.pivot else self.rna_count
+        I_K = torch.eye(self.rna_count) # K x K
+        b1_term = (1 + self.disp_model.b1) # scalar
 
+        # grad[i,k] = \sum_j \nabla_k \log P(Y_{ij}).
         grad = torch.zeros(self.sample_count, self.dim * self.covariate_count)
         for idx, (pi_i, phi_i, x, y) in enumerate(zip(pi, phi, self.X, self.Y)):
+            #import pdb; pdb.set_trace()
             s = torch.sum(y)
             mean = s * pi_i
             sigma2 = mean + phi_i * (mean ** 2)
             pp = mean/sigma2
-            r = 1 / phi_i
-            A = torch.eye(J) - pi_i.repeat((J, 1))
-            A = A.transpose(0, 1)
-            xx = x.repeat((J,1)).transpose(0,1)
+            rr = 1 / phi_i
+            I_pi = I_K - pi_i.unsqueeze(1)
+            xx = x.view(1, 1, self.covariate_count)
+            I_pi_x = I_pi.unsqueeze(-1) * xx
 
-            temp0 = -r * (1 - pp) * (1 + self.disp_model.b1)
-            temp1 = y * pp * (1 + self.disp_model.b1)
-            temp2 = xx * (temp0 + temp1)
-            temp3 = temp2.unsqueeze(1).repeat(1, J, 1)
-            val0 = temp3 * A
-
-            temp1 = -self.disp_model.b1 * (torch.digamma(y + r) - torch.digamma(r) + torch.log(pp)) / phi_i
-            temp2 = xx * temp1
-            temp3 = temp2.unsqueeze(1).repeat(1, J, 1)
-            val1 = temp3 * A
-
-            grad[idx,:] = torch.sum(val0 + val1, 2).flatten()
+            temp0 = -rr * (1 - pp) * b1_term
+            temp1 = y * pp * b1_term
+            temp2 = -self.disp_model.b1 * rr * (torch.digamma(y + rr) - torch.digamma(rr) + torch.log(pp))
+            temp = (temp0 + temp1 + temp2)
+            temp_reshaped = temp.view(self.rna_count, 1, 1)
+            result = I_pi_x.transpose(0,1) * temp_reshaped
+            result_sum = result.sum(dim=0)
+            grad_idx = result_sum[:-1,:] if self.pivot else result_sum
+            grad[idx,:] = grad_idx.transpose(0,1).flatten()
         return grad
 
     def log_posterior_gradient(self, beta):

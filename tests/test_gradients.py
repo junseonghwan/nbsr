@@ -56,20 +56,41 @@ class TestNBSRGradients(unittest.TestCase):
         print(grad_expected)
         print(grad_actual)
 
-    def test_log_lik_gradient_tensorized(self):
+    def test_log_lik_gradient_pivot(self):
         d = 3
         N = 20
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
     
+        print(Y.shape)
+        print(X.shape)
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
-        grad_expected = model.log_lik_gradient(model.beta, tensorized=False).data.numpy()
-        grad_actual = model.log_lik_gradient(model.beta, tensorized=True).data.numpy()
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=True)
+        z = model.log_likelihood(model.beta)
+        if model.beta.grad is not None:
+            model.beta.grad.zero_()
+        z.backward(retain_graph=True)
+        grad_expected = model.beta.grad.data.numpy()
+        grad_actual = model.log_lik_gradient(model.beta, tensorized=False).data.numpy()
         print(grad_expected)
-        print(grad_actual) 
+        print(grad_actual)
         self.assertTrue(np.allclose(grad_expected, grad_actual))
+
+    # def test_log_lik_gradient_tensorized(self):
+    #     d = 3
+    #     N = 20
+    #     J = 5
+    #     (Y, X, phi) = generate_data(d, N, J)
+    
+    #     #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
+    #     #X_df = pd.DataFrame(X)
+    #     model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
+    #     grad_expected = model.log_lik_gradient(model.beta, tensorized=False).data.numpy()
+    #     grad_actual = model.log_lik_gradient(model.beta, tensorized=True).data.numpy()
+    #     print(grad_expected)
+    #     print(grad_actual) 
+    #     self.assertTrue(np.allclose(grad_expected, grad_actual))
 
     def test_log_beta_prior_gradient(self):
         d = 3
@@ -160,6 +181,25 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
         model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model)
+        z = model.log_likelihood2(model.beta)
+        if model.beta.grad is not None:
+            model.beta.grad.zero_()
+        z.backward(retain_graph=True)
+        grad_expected = model.beta.grad.data.numpy()
+        grad_actual = model.log_lik_gradient_persample(model.beta).sum(0).data.numpy()
+        print(grad_expected)
+        print(grad_actual)
+        self.assertTrue(np.allclose(grad_expected, grad_actual))
+
+    def test_log_lik_gradient_pivot(self):
+        d = 3
+        N = 20
+        J = 5
+        (Y, X, phi) = generate_data(d, N, J)
+    
+        tensorY = torch.tensor(Y)
+        disp_model = dm.DispersionModel(tensorY)
+        model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model, pivot=True)
         z = model.log_likelihood2(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()

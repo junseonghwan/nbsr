@@ -160,7 +160,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             ret1 = x.repeat((J, 1)).transpose(0,1) * temp
             ret2 = ret1.unsqueeze(1).repeat(1, J, 1)
             ret3 = ret2 * A
-            grad[idx,:] = torch.sum(ret3, 2).flatten()
+            results_sum = torch.sum(ret3, 2)
+            grad_idx = results_sum[:,:-1] if self.pivot else results_sum
+            grad[idx,:] = grad_idx.flatten()
         return grad
     
     def log_lik_gradient_persample_tensorized(self, beta):
@@ -218,7 +220,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_prior_grad = -(self.lam**2) * beta_ / sd**2
         return(log_prior_grad.flatten())
 
-    def log_posterior_gradient(self, beta, tensorized=True):
+    def log_posterior_gradient(self, beta, tensorized=False):
         """
         Computes the gradient of the log posterior distribution with respect to the model parameters.
 
