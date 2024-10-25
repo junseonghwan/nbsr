@@ -36,6 +36,17 @@ def log_normal(x, mu, std):
 def log_lognormal(x, mu, std):
     return -torch.log(x * torch.sqrt(2*torch.pi*(std**2))) - (0.5*((torch.log(x) - mu)/std)**2)
 
+def log_half_normal(x, std):
+    normalization_term = torch.log(torch.sqrt(torch.tensor(2.0) / (std * torch.pi)))
+    log_density = normalization_term - (x**2) / (2 * std**2)
+    
+    # Penalize non-negative values by assigning a very large negative log-density
+    # This will make the optimization smooth.
+    penalty = -1e6
+    log_density = torch.where(x < 0, log_density, penalty)
+    
+    return log_density
+
 def softplus_inv(y):
     return y + y.neg().expm1().neg().log()
 

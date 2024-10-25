@@ -1,6 +1,6 @@
 import torch
 
-from nbsr.distributions import log_negbinomial, log_normal, softplus_inv
+from nbsr.distributions import log_negbinomial, log_normal, log_half_normal
 
 # Model for dispersion parameters of the NBSR.
 class DispersionModel(torch.nn.Module):
@@ -31,8 +31,9 @@ class DispersionModel(torch.nn.Module):
             self.b0 = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
         else:
             self.b0 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
-        self.b1 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
-        self.b2 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=False)
+        #self.b1 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
+        self.b1 = torch.nn.Parameter(-torch.abs(torch.randn(1, dtype=torch.float64)), requires_grad=True)
+        self.b2 = torch.nn.Parameter(-torch.abs(torch.randn(1, dtype=torch.float64)), requires_grad=False)
         if self.Z is None:
             self.beta = None
             self.covariate_count = 0
@@ -71,7 +72,8 @@ class DispersionModel(torch.nn.Module):
 
     def log_prior(self):
         log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(1.)).sum()
-        log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(0.1))
+        #log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(0.1))
+        log_prior1 = log_half_normal(self.b1, torch.tensor(0.1))
         log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(0.1))
         log_prior = log_prior0 + log_prior1 + log_prior2
         return log_prior.sum()
