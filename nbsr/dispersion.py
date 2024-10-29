@@ -1,13 +1,12 @@
 import torch
 
-from nbsr.distributions import log_negbinomial, log_normal, log_half_normal
+from nbsr.distributions import log_negbinomial, log_normal, log_half_normal, log_lognormal
 
-# Model for dispersion parameters of the NBSR.
+# LogNormal model for the dispersion parameters of the NBSRDispersion.
 class DispersionModel(torch.nn.Module):
-    def __init__(self, Y, Z = None, feature_specific_intercept = False, estimate_sd=False, b0j=None):
+    def __init__(self, Y, Z = None, feature_specific_intercept = False, b0j=None):
         super().__init__()
-        self.softplus = torch.nn.Softplus()
-        self.Y = Y
+        #self.softplus = torch.nn.Softplus()
         self.Z = Z # NxP design matrix for covariates to use in modeling the dispersion.
 
         self.feature_specific_intercept = feature_specific_intercept
@@ -31,22 +30,27 @@ class DispersionModel(torch.nn.Module):
             self.b0 = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
         else:
             self.b0 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
-        #self.b1 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
         self.b1 = torch.nn.Parameter(-torch.abs(torch.randn(1, dtype=torch.float64)), requires_grad=True)
-        self.b2 = torch.nn.Parameter(-torch.abs(torch.randn(1, dtype=torch.float64)), requires_grad=False)
+        self.b2 = torch.nn.Parameter(-torch.abs(torch.randn(1, dtype=torch.float64)), requires_grad=True)
         if self.Z is None:
             self.beta = None
             self.covariate_count = 0
         else:
             self.covariate_count = Z.shape[1]
             self.beta = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
-        
-        self.estimate_sd = True
-        if estimate_sd:
-            # sd = softplus(self.tau)
-            self.tau = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
-            self.std_normal = torch.distributions.Normal(loc=0., scale=1.)
 
+        self.kappa = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
+
+        # self.estimate_sd = True
+        # if estimate_sd:
+        #     # sd = softplus(self.tau)
+        #     self.kappa = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
+        #     self.std_normal = torch.distributions.Normal(loc=0., scale=1.)
+
+    def get_sd(self):
+        return torch.nn.functional.softplus(self.kappa.detach())
+
+    # Compute the mean of the distribution.
     def forward(self, log_pi):
         # log_pi has shape (self.sample_count, self.feature_count)
         #assert(log_pi.shape[0] == self.sample_count)
@@ -63,28 +67,21 @@ class DispersionModel(torch.nn.Module):
         else:
             val3 = torch.mm(self.Z, self.beta.unsqueeze(-1)).expand(-1, self.feature_count)
         log_phi_mean = val0 + val1 + val2 + val3
-        # if not predict and self.estimate_sd:
-        #     z = self.std_normal.sample((self.sample_count, self.feature_count))
-        #     sd = self.softplus(self.tau)
-        #     log_phi = log_phi_mean + z * sd
-        #     return(log_phi)            
         return(log_phi_mean)
 
     def log_prior(self):
         log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(1.)).sum()
-        #log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(0.1))
-        log_prior1 = log_half_normal(self.b1, torch.tensor(0.1))
-        log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(0.1))
+        # log_prior1 = log_half_normal(-self.b1, torch.tensor(0.1))
+        # log_prior2 = log_half_normal(-self.b2, torch.tensor(0.1))
+        log_prior1 = log_normal(self.b1, torch.tensor([0.]), torch.tensor(0.1))
+        log_prior2 = log_normal(self.b2, torch.tensor([0.]), torch.tensor(0.1))
         log_prior = log_prior0 + log_prior1 + log_prior2
-        return log_prior.sum()
-        #return torch.tensor(0.)
+        return log_prior
 
-    # log P(Y | \mu, dispersion) + log P(dispersion | \theta)
-    def log_posterior(self, pi):
+    # LogNormal evaluated at phi | pi and current model parameter.
+    def log_density(self, phi, pi):
         log_pi = torch.log(pi)
-        mu = pi * self.R[:,None]
 
-        log_phi = self.forward(log_pi)
-        log_lik_vals = log_negbinomial(self.Y, mu, torch.exp(log_phi))
-        log_posterior = log_lik_vals.sum() + self.log_prior()
-        return(log_posterior)
+        log_phi_mean = self.forward(log_pi)
+        log_lik_vals = log_lognormal(phi, log_phi_mean, self.get_sd())
+        return(log_lik_vals)

@@ -165,9 +165,13 @@ class TestNBSRGradients(unittest.TestCase):
             hess_expected[k,:] = model.beta.grad
 
         hess_realized = torch.sum(model.log_lik_hessian_persample(model.beta),0).data.numpy()
+        err = np.sum(hess_expected.detach().numpy() - hess_realized)
+        print(f"NBSR Hessian computation error: {err}")
         #print(hess_expected)
         #print(hess_realized)
         print("Testing Hessian computation...")
+        # TODO: This test sometimes fails. There must be small discrepency that is not accounted for.
+        # The manual Hessian code is not in use so this is not an urgent fix.
         self.assertTrue(np.allclose(hess_expected, hess_realized))
 
 class TestNBSRDispersionGradients(unittest.TestCase):
@@ -181,7 +185,7 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
         model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model)
-        z = model.log_likelihood2(model.beta)
+        z = model.log_likelihood2(model.beta).sum()
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
@@ -200,7 +204,7 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
         model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model, pivot=True)
-        z = model.log_likelihood2(model.beta)
+        z = model.log_likelihood2(model.beta).sum()
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)

@@ -86,6 +86,13 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         sd = self.softplus(self.psi)
         log_prior1 = torch.sum(log_normal(beta_, torch.zeros_like(sd), sd/self.lam))
         return(log_prior1)
+    
+    def log_prior(self, beta):
+        beta_ = beta.reshape(self.dim, self.covariate_count)
+        sd = self.softplus(self.psi)
+        log_prior_beta = torch.sum(log_normal(beta_, torch.zeros_like(sd), sd/self.lam))
+        log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
+        return(log_prior_beta.sum() + log_var_prior.sum())
 
     def log_posterior(self, beta):
         """

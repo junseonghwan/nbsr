@@ -17,21 +17,37 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
     def __init__(self, X, Y, disp_model, prior_sd=None, pivot=False):
         super().__init__(X, Y, None, None, None, prior_sd, pivot)
         self.disp_model = disp_model
-        self.phi = None
 
     def log_likelihood(self, mu, phi):
-        # Define log_liklihood that uses the new architecture.
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
-        return log_lik_vals.sum()
+        return log_lik_vals
 
+    # Evaluates log likelihood by drawing Monte Carlo samples.
+    # Returns MxNxK log likelihood values.
+    def log_likelihood_samples(self, mc_samples):
+        pi,_ = self.predict(self.beta, self.X)
+        mu = self.s[:, None] * pi
+        log_pi = torch.log(pi)
+
+        # We approximate the Q function by sampling the dispersion.
+        N, K = pi.shape
+        epsilon = torch.randn(mc_samples, N, K)
+
+        phi = torch.exp(self.disp_model.forward(log_pi).unsqueeze(0) + epsilon * self.disp_model.get_sd())
+
+        # Compute the log likelihood of Y.
+        log_marginal_lik = torch.stack([self.log_likelihood(mu, phi_m) for phi_m in phi])
+        return (log_marginal_lik, phi)
+
+    # Returns the log posterior with log likelihood evalauted at the mean of phi.
     def log_posterior(self, beta):
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
         phi = torch.exp(self.disp_model.forward(log_pi))
 
-        # Compute the log likelihood of Y
-        log_lik = self.log_likelihood(mu, phi)
+        # Compute the log likelihood of Y.
+        log_lik = self.log_likelihood(mu, phi).sum()
         # Compute the log of prior.
         sd = self.softplus(self.psi)
         # normal prior on beta -- 0 mean and sd = softplus(psi).
@@ -45,14 +61,13 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
     def forward(self, beta):
         return self.log_posterior(beta)
 
-    def log_likelihood2(self, beta):
-        # Define log_liklihood that uses the new architecture.
+    def log_likelihood2(self, beta, phi=None):
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
-        log_lik_vals = log_negbinomial(self.Y, mu, phi)
-        return log_lik_vals.sum()
+        dispersion = torch.exp(self.disp_model.forward(log_pi)) if phi is None else phi
+        log_lik_vals = log_negbinomial(self.Y, mu, dispersion)
+        return log_lik_vals
 
     ### Gradient of the model
     def log_lik_gradient_persample(self, beta):

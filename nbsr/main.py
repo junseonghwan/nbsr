@@ -15,7 +15,7 @@ from nbsr.nbsr_eb import NBSREmpiricalBayes
 from nbsr.zinbsr import ZINBSR
 from nbsr.grbf import GaussianRBF, evaluate_mean
 from nbsr.utils import *
-from nbsr.distributions import softplus
+from nbsr.distributions import softplus, log_invgamma
 
 torch.set_default_dtype(torch.float64)
 torch.set_printoptions(precision=9)
@@ -204,6 +204,45 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 	std_err = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 	return (logFC, std_err, I)
 
+# model: instance of NBSRDispersion class.
+def fit_mcem(model, optimizer, em_iterations, mc_samples, m_step_iterations):
+	assert(isinstance(model, NBSRDispersion))
+
+	for em_iter in range(100):
+		if em_iter % 10 == 0:
+			print(f"EM iteration {em_iter}.")
+		
+		log_weights, phi_samples = model.log_likelihood_samples(mc_samples)
+		phi_samples = phi_samples.detach()
+		log_weights = log_weights.detach()
+		log_weights_sum = torch.logsumexp(log_weights, dim=0, keepdim=True)  # Shape: 1 x N x K
+		normalized_log_weights = log_weights - log_weights_sum  # Shape: M x N x K
+		normalized_weights = torch.exp(normalized_log_weights).data
+		#err = torch.sum(normalized_weights.sum(0) - 1., dtype=torch.float32)
+		#self.assertTrue(torch.allclose(err, torch.tensor([0.]), atol=1e-6))
+
+		for iter in range(100):
+			# Construct the Q-function to optimize.
+			pi,_ = model.predict(model.beta, model.X)
+			log_obs_lik = torch.stack([model.log_likelihood2(model.beta, phi_m) for phi_m in phi_samples])
+			log_phi_lik = torch.stack([model.disp_model.log_density(phi_m, pi) for phi_m in phi_samples])
+			# Compute the log of prior.
+			sd = model.softplus(model.psi)
+			# normal prior on beta -- 0 mean and sd = softplus(psi).
+			log_beta_prior = model.log_beta_prior(model.beta)
+			# inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
+			log_var_prior = torch.sum(log_invgamma(sd**2, model.beta_var_shape, model.beta_var_scale))
+			log_dispersion_prior = model.disp_model.log_prior()
+			log_prior = log_beta_prior + log_var_prior + log_dispersion_prior
+
+			objective_q = (normalized_weights * (log_obs_lik + log_phi_lik)).sum() + log_prior
+
+			# Optimize the posterior
+			loss = -objective_q
+			optimizer.zero_grad()
+			loss.backward(retain_graph=True)
+			optimizer.step()
+
 def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	# Fit the model.
 	loss_history = []
@@ -347,7 +386,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 		phi = torch.exp(model.disp_model(torch.log(pi)))
 		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b0.csv"), model.disp_model.b0.data.numpy().transpose(), delimiter=',')
 		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b1.csv"), model.disp_model.b1.data.numpy().transpose(), delimiter=',')
-		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b2.csv"), model.disp_model.b2.data.numpy().transpose(), delimiter=',')
+		#np.savetxt(os.path.join(output_path, "nbsr_dispersion_b2.csv"), model.disp_model.b2.data.numpy().transpose(), delimiter=',')
 		if config["estimate_dispersion_sd"]:
 			np.savetxt(os.path.join(output_path, "nbsr_dispersion_sd.csv"), model.disp_model.softplus(model.disp_model.tau).data.numpy().transpose(), delimiter=',')
 	else:
@@ -453,6 +492,44 @@ def eb(data_path, vars, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf
 @click.argument('vars', nargs=-1)
 @click.option('-i', '--iterations', default=10000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
+@click.option('-r', '--runs', default=1, type= int, help="Number of optimization runs (initialization).")
+@click.option('--lam', default=1., type=float)
+@click.option('--shape', default=3, type=float)
+@click.option('--scale', default=2, type=float)
+@click.option('--feature_specific_intercept', is_flag=True, show_default=False, default=False, type=bool)
+@click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--tol', default=0.01, type=float)
+@click.option('--lookback_iterations', default=50, type=int)
+def nbsr(data_path, vars, iterations, lr, runs, lam, shape, scale, feature_specific_intercept, pivot, tol, lookback_iterations):
+
+	losses = []
+	for run_no in range(runs):
+		outpath = os.path.join(data_path, "run" + str(run_no))
+		config = get_config(data_path, outpath, list(vars), None, lr, None, lam, shape, scale, True, True, feature_specific_intercept, pivot, False)
+		state = {"config": config}
+		loss = run(state, iterations, tol, lookback_iterations)
+		losses.append(loss)
+
+	# Find the best run and copy the results and checkpoint file up to the data_path.
+	best_run = np.argmin(np.array(losses))
+	best_run_path = os.path.join(data_path, "run" + str(best_run))
+	for filename in os.listdir(best_run_path):
+		file_path = os.path.join(best_run_path, filename)
+		if os.path.isfile(file_path):
+			# Copy each file to data_path
+			shutil.copy2(file_path, os.path.join(data_path, filename))
+
+	# Obtain Hessian matrix.
+	state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
+	model, _ = load_model_from_state_dict(state_dict, config)
+	I = compute_observed_information(model)
+	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
+
+@click.command()
+@click.argument('data_path', type=click.Path(exists=True))
+@click.argument('vars', nargs=-1)
+@click.option('-i', '--iterations', default=10000, type=int)
+@click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('-L', '--logistic_max', default=0.2, type=float, help="ZINBSR max value for logistic function.")
 @click.option('-r', '--runs', default=1, type= int, help="Number of optimization runs (initialization).")
 @click.option('--z_columns', multiple=True, help="Enter list of strings specifying the covariate names to use for zero inflation.")
@@ -536,6 +613,7 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(eb)
+cli.add_command(nbsr)
 cli.add_command(train)
 cli.add_command(resume)
 cli.add_command(results)
