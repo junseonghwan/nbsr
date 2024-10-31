@@ -11,65 +11,55 @@ from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softpl
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.dispersion import DispersionModel
 
-# This model extends the basic NBSR model with dispersion
+# This model extends the basic NBSR model with dispersion.
 class NBSRDispersion(NegativeBinomialRegressionModel):
 
     def __init__(self, X, Y, disp_model, prior_sd=None, pivot=False):
         super().__init__(X, Y, None, None, None, prior_sd, pivot)
         self.disp_model = disp_model
 
-    def log_likelihood(self, mu, phi):
+    def log_obs_likelihood(self, pi, phi):
+        mu = self.s[:,None] * pi
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
         return log_lik_vals
+    
+    # compute log likelihood using NBSR parameters beta.
+    def log_obs_likelihood2(self, beta, phi=None):
+        pi,_ = self.predict(beta, self.X)
+        dispersion = torch.exp(self.disp_model.forward(pi)) if phi is None else phi
+        log_lik_vals = self.log_obs_likelihood(pi, dispersion)
+        return log_lik_vals
 
-    # Evaluates log likelihood by drawing Monte Carlo samples.
-    # Returns MxNxK log likelihood values.
+    # Evaluates the log of the joint likelihood by drawing Monte Carlo samples.
+    # Returns MxNxK log likelihood values and phi samples.
     def log_likelihood_samples(self, mc_samples):
         pi,_ = self.predict(self.beta, self.X)
-        mu = self.s[:, None] * pi
-        log_pi = torch.log(pi)
 
         # We approximate the Q function by sampling the dispersion.
         N, K = pi.shape
         epsilon = torch.randn(mc_samples, N, K)
 
-        phi = torch.exp(self.disp_model.forward(log_pi).unsqueeze(0) + epsilon * self.disp_model.get_sd())
+        phi = torch.exp(self.disp_model.forward(pi).unsqueeze(0) + epsilon * self.disp_model.get_sd())
 
         # Compute the log likelihood of Y.
-        log_marginal_lik = torch.stack([self.log_likelihood(mu, phi_m) for phi_m in phi])
-        return (log_marginal_lik, phi)
+        log_obs_lik = torch.stack([self.log_obs_likelihood(pi, phi_m) for phi_m in phi])
+        log_dispersion_lik = torch.stack([self.disp_model.log_density(phi_m, pi) for phi_m in phi])
+        return (log_obs_lik + log_dispersion_lik, phi)
 
     # Returns the log posterior with log likelihood evalauted at the mean of phi.
     def log_posterior(self, beta):
         pi,_ = self.predict(beta, self.X)
-        mu = self.s[:, None] * pi
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(pi))
 
         # Compute the log likelihood of Y.
-        log_lik = self.log_likelihood(mu, phi).sum()
-        # Compute the log of prior.
-        sd = self.softplus(self.psi)
-        # normal prior on beta -- 0 mean and sd = softplus(psi).
-        log_beta_prior = self.log_beta_prior(beta)
-        # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
-        log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
+        log_lik = self.log_obs_likelihood(pi, phi).sum()
+        # Compute the log priors.
+        log_nbsr_prior = self.log_prior(self.beta)
         log_dispersion_prior = self.disp_model.log_prior()
-        log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
+        log_posterior = log_lik + log_nbsr_prior + log_dispersion_prior
         return log_posterior
-    
-    def forward(self, beta):
-        return self.log_posterior(beta)
-
-    def log_likelihood2(self, beta, phi=None):
-        pi,_ = self.predict(beta, self.X)
-        mu = self.s[:, None] * pi
-        log_pi = torch.log(pi)
-        dispersion = torch.exp(self.disp_model.forward(log_pi)) if phi is None else phi
-        log_lik_vals = log_negbinomial(self.Y, mu, dispersion)
-        return log_lik_vals
-
-    ### Gradient of the model
+        
+    ### Gradients of the model
     def log_lik_gradient_persample(self, beta):
         """
         Computes the gradient of the log-likelihood function with respect to the model parameters for each sample.
@@ -82,8 +72,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         """        
         #beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         pi,_ = self.predict(beta, self.X) # N x K
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi)) # N x K
+        phi = torch.exp(self.disp_model.forward(pi)) # N x K
         #J = self.rna_count-1 if self.pivot else self.rna_count
         I_K = torch.eye(self.rna_count) # K x K
         b1_term = (1 + self.disp_model.b1) # scalar

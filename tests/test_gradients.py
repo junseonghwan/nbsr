@@ -46,7 +46,7 @@ class TestNBSRGradients(unittest.TestCase):
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
-        z = model.log_likelihood(model.beta)
+        z = model.log_obs_likelihood(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
@@ -67,7 +67,7 @@ class TestNBSRGradients(unittest.TestCase):
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=True)
-        z = model.log_likelihood(model.beta)
+        z = model.log_obs_likelihood(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
@@ -185,7 +185,7 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
         model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model)
-        z = model.log_likelihood2(model.beta).sum()
+        z = model.log_obs_likelihood2(model.beta).sum()
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
@@ -204,7 +204,7 @@ class TestNBSRDispersionGradients(unittest.TestCase):
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
         model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model, pivot=True)
-        z = model.log_likelihood2(model.beta).sum()
+        z = model.log_obs_likelihood2(model.beta).sum()
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)

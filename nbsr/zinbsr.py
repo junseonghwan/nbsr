@@ -19,7 +19,7 @@ class ZINBSR(NegativeBinomialRegressionModel):
         self.Z = Z
         self.b = torch.nn.Parameter(torch.randn(self.Z.shape[1], dtype=torch.float64), requires_grad=True)
 
-    def log_likelihood(self, beta):
+    def log_obs_likelihood(self, beta):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         log_unnorm_exp = torch.matmul(self.X, beta_)
         if self.pivot:
@@ -44,7 +44,7 @@ class ZINBSR(NegativeBinomialRegressionModel):
         return(log_lik)
     
     def log_posterior(self, beta):
-        log_lik = self.log_likelihood(beta)
+        log_lik = self.log_obs_likelihood(beta)
         sd = self.softplus(self.psi)
         # normal prior on beta -- 0 mean and sd = softplus(psi).
         log_prior1 = self.log_beta_prior(self.beta)

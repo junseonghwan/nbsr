@@ -58,7 +58,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         print("Initial psi:", self.psi)
         #self.psi = softplus_inv(torch.tensor(invgamma.rvs(self.beta_var_shape, self.beta_var_scale, size=self.covariate_count+1)))
 
-    def log_likelihood(self, beta):
+    def log_obs_likelihood(self, beta):
         """
         Computes the log-likelihood of the negative binomial model.
 
@@ -106,7 +106,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         Returns:
             torch.Tensor: A scalar tensor representing the log posterior probability.
         """
-        log_lik = self.log_likelihood(beta)
+        log_lik = self.log_obs_likelihood(beta)
         sd = self.softplus(self.psi)
         dispersion = self.softplus(self.phi)
         # normal prior on beta -- 0 mean and sd = softplus(psi).
