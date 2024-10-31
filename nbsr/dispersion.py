@@ -91,9 +91,10 @@ class DispersionGRBF(torch.nn.Module):
         self.Z = Z # NxP design matrix of covariates.
         # the number of parameters is knot_count + 2 + Z.shape[1] for intercept and slope.
         self.dim = knot_count + 2 + Z.shape[1]
-        self.beta = torch.nn.Parameter(torch.randn(self.dim, dtype=torch.float64), requires_grad=True)
+        #self.beta = torch.nn.Parameter(torch.randn(self.dim, dtype=torch.float64), requires_grad=True)
+        self.beta = torch.nn.Parameter(torch.zeros(self.dim, dtype=torch.float64), requires_grad=True)
         if sd is None:
-            self.kappa = torch.nn.Parameter(torch.tensor([0.1]), requires_grad=True)
+            self.kappa = torch.nn.Parameter(softplus_inv(torch.tensor([0.5])), requires_grad=True)
         else:
             self.kappa = softplus_inv(torch.tensor(sd, requires_grad=False))
         self.width = width
