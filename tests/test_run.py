@@ -37,17 +37,19 @@ class TestNBSRGradients(unittest.TestCase):
         min_val = torch.min(log_pi)
         max_val = torch.max(log_pi)
         K = tensorY.shape[1]
-        #K = 1
         log_R = torch.log(tensorY.sum(1))
-        grbf_disp_model = dm.DispersionGRBF(min_val, max_val, Z=log_R.unsqueeze(1))
+        grbf_disp_model = dm.DispersionGRBF(min_val, max_val, Z=log_R.unsqueeze(1), sd_dimension=K)
         model = nbsrd.NBSRDispersion(X, tensorY, disp_model=grbf_disp_model, pivot=False)
         model.specify_beta_prior(1., 3., 2.)
         for name, param in grbf_disp_model.named_parameters():
             print(name)
         optimizer = torch.optim.Adam(grbf_disp_model.parameters(), lr = 0.01)
+        # We optimize log likelihood + GRBF prior. We don't optimize kappa here.
         for i in range(3000):
             phi_hat = torch.exp(grbf_disp_model.forward(pi_hat))
-            loss = -model.log_obs_likelihood(pi_hat, phi_hat).sum()
+            log_lik = model.log_obs_likelihood(pi_hat, phi_hat).sum()
+            log_prior = grbf_disp_model.log_prior().sum()
+            loss = -(log_lik + log_prior)
             optimizer.zero_grad()
             loss.backward(retain_graph=False)
             optimizer.step()
@@ -57,8 +59,9 @@ class TestNBSRGradients(unittest.TestCase):
 
         phi = torch.exp(grbf_disp_model.forward(pi_hat))
         np.savetxt(os.path.join(output_path, "nbsr_dispersion_prior.csv"), phi.data.numpy().transpose(), delimiter=',')
-        np.savetxt(os.path.join(output_path, "kappa.csv"), grbf_disp_model.get_sd().detach().numpy(), delimiter=',')
 
+        # Formulate prior on kappa.
+        
         # Use MC-EM NBSR Dispersion with the GRBF prior (do not update GRBF parameters).
         model_params = []
         for name, param in model.named_parameters():
@@ -68,8 +71,8 @@ class TestNBSRGradients(unittest.TestCase):
             model_params.append(param)
 
         # We will optimize kappa parameter to get a sense of variance around dispersion.
-        optimizer = torch.optim.Adam(model_params, lr=0.05)
-        mc_samples = 10
+        optimizer = torch.optim.Adam(model_params, lr=0.01)
+        mc_samples = 20
         for em_iter in range(50):
             log_weights, phi_samples = model.log_likelihood_samples(mc_samples)
             phi_samples = phi_samples.detach()
@@ -117,5 +120,6 @@ class TestNBSRGradients(unittest.TestCase):
         print(f"Mean absolute error: {err.detach().numpy()}")
         np.savetxt(os.path.join(output_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
         np.savetxt(os.path.join(output_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
+        np.savetxt(os.path.join(output_path, "kappa.csv"), grbf_disp_model.get_sd().detach().numpy(), delimiter=',')
 
 

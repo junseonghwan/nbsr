@@ -5,9 +5,10 @@ from scipy.stats import invgamma
 
 from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
 
+# This is a NBSR model with shared dispersion across genomic features.
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
-    def __init__(self, X, Y, mu_bar=None, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, mu_bar=None, dispersion=None, prior_sd=None, pivot=False):
         super().__init__()
         assert(isinstance(X, torch.Tensor))
         assert(isinstance(Y, torch.Tensor))
@@ -32,12 +33,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         self.dim = self.rna_count - 1 if pivot else self.rna_count
         self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
         #self.beta = torch.nn.Parameter(torch.zeros(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
-        self.dispersion_prior = dispersion_prior
         if dispersion is None:
-            if dispersion_prior is not None and mu_bar is not None:
-                self.phi = torch.nn.Parameter(softplus_inv(dispersion_prior.sample(mu_bar)), requires_grad=True)
-            else:
-                self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
+            # Initialize dispersion values randomly. 
+            self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
         if prior_sd is None:

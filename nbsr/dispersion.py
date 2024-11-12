@@ -86,15 +86,19 @@ class DispersionModel(torch.nn.Module):
         return(log_lik_vals)
 
 class DispersionGRBF(torch.nn.Module):
-    def __init__(self, min_value, max_value, Z=None, sd_dimension=1, sd=None, knot_count = 10, width=1.2):
+    def __init__(self, min_value, max_value, Z=None, sd=None, knot_count = 10, width=1.2):
         super().__init__()
         self.Z = Z # NxP design matrix of covariates.
-        # the number of parameters is knot_count + 2 + Z.shape[1] for intercept and slope.
-        self.dim = knot_count + 2 + Z.shape[1]
+        # the number of parameters is knot_count + 2 + Z.shape[1] (+2 for intercept and log pi and other covariates in Z).
+        self.dim = knot_count + 2
+        if Z is not None:
+            self.dim += Z.shape[1]
+
         #self.beta = torch.nn.Parameter(torch.randn(self.dim, dtype=torch.float64), requires_grad=True)
         self.beta = torch.nn.Parameter(torch.zeros(self.dim, dtype=torch.float64), requires_grad=True)
+        # kappa parameter is in the log scale.
         if sd is None:
-            self.kappa = torch.nn.Parameter(softplus_inv(torch.tensor([0.5])), requires_grad=True)
+            self.kappa = torch.nn.Parameter(softplus_inv(torch.tensor(0.5)), requires_grad=True)
         else:
             self.kappa = softplus_inv(torch.tensor(sd, requires_grad=False))
         self.width = width
@@ -112,13 +116,13 @@ class DispersionGRBF(torch.nn.Module):
         return(log_phi_mean)
 
     def get_sd(self):
-        return torch.nn.functional.softplus(self.kappa)
+        return torch.exp(self.kappa)
 
     # phi ~ LogNormal(f(log pi), sd).
     def log_density(self, phi, pi):
         assert(phi.shape == pi.shape)
-        # phi: log of dispersion values of dimension NxK.
-        # pi: pi values of dimension NxK.
+        # phi: log of dispersion values of dimension NxK -- N=1 if using feature wise dispersion.
+        # pi: pi values of dimension NxK -- N=1 if using feature wise dispersion.
         log_phi_mean = self.forward(pi)
         sd = self.get_sd()
         log_lik = log_lognormal(phi, log_phi_mean, sd)
@@ -131,6 +135,7 @@ class DispersionGRBF(torch.nn.Module):
 
     # pi: not in log scale (will take the log in the function)
     # centers: in log scale.
+    # Returns log phi mean (trend).
     def evaluate_mean(self, pi, beta, log_centers=None, scales=None):
         # pi is a tensor of dimension NxK.
         log_pi = torch.log(pi)
@@ -147,7 +152,7 @@ class DispersionGRBF(torch.nn.Module):
             X = torch.concat([intercept, log_pi], dim = 2)
         if self.Z is not None:
             Z = self.Z.unsqueeze(1).expand(-1, K, -1)
-            X = torch.cat((X, Z), dim=2)
+            X = torch.cat((Z,X), dim=2)
         f = torch.matmul(X, beta)
         return(f, X)
 
