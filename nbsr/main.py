@@ -447,7 +447,7 @@ def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
 		parameters.append(param)
 	optimizer = torch.optim.Adam(parameters,lr=nbsr_lr)
 	nbsr_model.specify_beta_prior(1., 3., 2.)
-	loss_history, best_model_state, best_loss, converged = fit_posterior(nbsr_model, optimizer, nb_iter, 1e-3, 50)
+	loss_history, best_model_state, best_loss, converged = fit_posterior(nbsr_model, optimizer, nbsr_iter, 1e-3, 50)
 	pi, _ = nbsr_model.predict(nbsr_model.beta, nbsr_model.X)
 	log_pi = torch.log(pi.detach())
 	phi = torch.exp(nbsr_model.disp_model.forward(log_pi))
