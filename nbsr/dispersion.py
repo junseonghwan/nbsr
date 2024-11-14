@@ -28,11 +28,11 @@ class DispersionModel(torch.nn.Module):
             self.b0 = torch.nn.Parameter(b0j, requires_grad=True)
             self.feature_specific_intercept = True
         elif feature_specific_intercept:
-            self.b0 = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
+            self.b0 = torch.nn.Parameter(0.05*torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
         else:
-            self.b0 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
-        self.b1 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
-        self.b2 = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=False)
+            self.b0 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=True)
+        self.b1 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=True)
+        self.b2 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=False)
         if self.Z is None:
             self.beta = None
             self.covariate_count = 0
@@ -75,7 +75,6 @@ class DispersionModel(torch.nn.Module):
         log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(0.1))
         log_prior = log_prior0 + log_prior1 + log_prior2
         return log_prior.sum()
-        #return torch.tensor(0.)
 
     # log P(Y | \mu, dispersion) + log P(dispersion | \theta)
     def log_posterior(self, pi):

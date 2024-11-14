@@ -19,19 +19,19 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         self.disp_model = disp_model
         self.phi = None
 
-    def log_likelihood(self, mu, phi):
+    def log_likelihood(self, pi, phi):
         # Define log_liklihood that uses the new architecture.
+        mu = self.s[:,None] * pi
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
         return log_lik_vals.sum()
 
     def log_posterior(self, beta):
         pi,_ = self.predict(beta, self.X)
-        mu = self.s[:, None] * pi
         log_pi = torch.log(pi)
         phi = torch.exp(self.disp_model.forward(log_pi))
 
         # Compute the log likelihood of Y
-        log_lik = self.log_likelihood(mu, phi)
+        log_lik = self.log_likelihood(pi, phi)
         # Compute the log of prior.
         sd = self.softplus(self.psi)
         # normal prior on beta -- 0 mean and sd = softplus(psi).

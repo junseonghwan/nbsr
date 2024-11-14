@@ -388,6 +388,77 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
+@click.option('--eb_iter', default=3000, type=int, help="NBSR dispersion model training iterations.")
+@click.option('--eb_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
+@click.option('--nbsr_iter', default=10000, type=int, help="NBSR dispersion model training iterations.")
+@click.option('--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
+def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
+	# Read in the mean expression.
+	# Optimize NBSREmpiricalBayes to get MLE dispersions.
+	# Fit GRBF with phi_mle ~ f(mu_bar).
+	# Obtain the mean dispersion and use it for fitting NBSR and output it to file.
+	print("Performing Empirical Bayes estimation of dispersion.")
+	column_names = list(vars)
+	deseq2_mu = pd.read_csv(os.path.join(data_path, "deseq2_mu.csv"))
+	deseq2_mu = torch.tensor(deseq2_mu.transpose().to_numpy())
+	counts_pd = pd.read_csv(os.path.join(data_path, "Y.csv"))
+	if os.path.exists(os.path.join(data_path, "X.csv")):
+		coldata_pd = pd.read_csv(os.path.join(data_path, "X.csv"), na_filter=False, skipinitialspace=True)
+	else:
+		coldata_pd = None
+	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
+	X,_ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
+
+	pi_hat = deseq2_mu / deseq2_mu.sum(dim=1, keepdim=True)
+	log_pi_hat = torch.log(pi_hat)
+
+	disp_model = DispersionModel(Y, feature_specific_intercept=False, estimate_sd=False)
+	nbsr_model = NBSRDispersion(X, Y, disp_model=disp_model)
+	optimizer = torch.optim.Adam(nbsr_model.disp_model.parameters(),lr=eb_lr)
+	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
+	for i in range(eb_iter):
+		phi = torch.exp(nbsr_model.disp_model.forward(log_pi_hat))
+		log_prior = nbsr_model.disp_model.log_prior()
+		loss = -(nbsr_model.log_likelihood(pi_hat, phi) + log_prior)
+		if loss.isnan():
+			print("nan")
+			break
+		optimizer.zero_grad()
+		loss.backward(retain_graph=True)
+		optimizer.step()
+		if i % 100 == 0:
+			print("Iter:", i)
+			print(loss.data)
+
+	phi = torch.exp(nbsr_model.disp_model.forward(log_pi_hat))
+	np.savetxt(os.path.join(data_path, "eb_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b0.csv"), nbsr_model.disp_model.b0.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b1.csv"), nbsr_model.disp_model.b1.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b2.csv"), nbsr_model.disp_model.b2.data.numpy().transpose(), delimiter=',')
+	torch.save(disp_model, os.path.join(data_path, 'disp_model.pth'))
+
+	# Fit NBSR model using the dispersion model.
+	parameters = []
+	for name, param in nbsr_model.named_parameters():
+		print(name)
+		if "disp_model" in name:
+			continue
+		print("add")
+		parameters.append(param)
+	optimizer = torch.optim.Adam(parameters,lr=nbsr_lr)
+	nbsr_model.specify_beta_prior(1., 3., 2.)
+	loss_history, best_model_state, best_loss, converged = fit_posterior(nbsr_model, optimizer, nb_iter, 1e-3, 50)
+	pi, _ = nbsr_model.predict(nbsr_model.beta, nbsr_model.X)
+	log_pi = torch.log(pi.detach())
+	phi = torch.exp(nbsr_model.disp_model.forward(log_pi))
+	np.savetxt(os.path.join(data_path, "nbsr_beta.csv"), nbsr_model.beta.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_beta_sd.csv"), nbsr_model.softplus(nbsr_model.psi.data).numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
+
+@click.command()
+@click.argument('data_path', type=click.Path(exists=True))
+@click.argument('vars', nargs=-1)
 @click.option('--nbsr_iter', default=5000, type=int, help="NBSR dispersion model training iterations.")
 @click.option('--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
 @click.option('--grbf_iter', default=5000, type=int, help="GRBF model training iterations.")
@@ -536,6 +607,7 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(eb)
+cli.add_command(eb2)
 cli.add_command(train)
 cli.add_command(resume)
 cli.add_command(results)
