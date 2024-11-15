@@ -456,6 +456,19 @@ def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
 	np.savetxt(os.path.join(data_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
 
+	model_state = {
+		'model_state_dict': nbsr_model.state_dict(),
+		'best_model_state_dict': best_model_state,
+		'optimizer_state_dict': optimizer.state_dict(),
+		'loss': loss_history,
+		'best_loss': loss_history,
+		'converged': converged
+	}
+	torch.save({
+		'model_state': model_state,
+        'config': None
+        }, os.path.join(data_path, 'checkpoint.pth'))
+	
 	# Obtain Hessian matrix.
 	#state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
 	I = compute_observed_information(nbsr_model)
