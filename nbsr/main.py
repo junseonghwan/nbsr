@@ -456,6 +456,11 @@ def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
 	np.savetxt(os.path.join(data_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
 
+	# Obtain Hessian matrix.
+	#state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
+	I = compute_observed_information(nbsr_model)
+	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
+
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
