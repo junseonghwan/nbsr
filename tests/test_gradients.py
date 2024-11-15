@@ -180,7 +180,7 @@ class TestNBSRDispersionGradients(unittest.TestCase):
     
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model)
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model)
         z = model.log_likelihood2(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
@@ -199,7 +199,7 @@ class TestNBSRDispersionGradients(unittest.TestCase):
     
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model, pivot=True)
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, pivot=True)
         z = model.log_likelihood2(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
@@ -218,7 +218,7 @@ class TestNBSRDispersionGradients(unittest.TestCase):
     
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRDispersion(torch.tensor(X), tensorY, disp_model=disp_model)
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model)
         model.specify_beta_prior(1, 3, 2)
         z = model.log_posterior(model.beta)
         if model.beta.grad is not None:

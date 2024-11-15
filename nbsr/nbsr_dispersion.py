@@ -11,8 +11,8 @@ from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softpl
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.dispersion import DispersionModel
 
-# This model extends the basic NBSR model with dispersion
-class NBSRDispersion(NegativeBinomialRegressionModel):
+# This model extends the basic NBSR model with trended dispersion given by disp_model.forward(pi).
+class NBSRTrended(NegativeBinomialRegressionModel):
 
     def __init__(self, X, Y, disp_model, prior_sd=None, pivot=False):
         super().__init__(X, Y, None, None, None, prior_sd, pivot)

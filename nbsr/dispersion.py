@@ -76,6 +76,10 @@ class DispersionModel(torch.nn.Module):
         log_prior = log_prior0 + log_prior1 + log_prior2
         return log_prior.sum()
 
+    def log_density(self):
+        # Log Normal distribution density.
+        pass
+
     # log P(Y | \mu, dispersion) + log P(dispersion | \theta)
     def log_posterior(self, pi):
         log_pi = torch.log(pi)

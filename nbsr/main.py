@@ -9,7 +9,7 @@ import scipy
 import torch
 
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
-from nbsr.nbsr_dispersion import NBSRDispersion
+from nbsr.nbsr_dispersion import NBSRTrended
 from nbsr.dispersion import DispersionModel
 from nbsr.nbsr_eb import NBSREmpiricalBayes
 from nbsr.zinbsr import ZINBSR
@@ -242,7 +242,8 @@ def construct_model(config):
 	#Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
 	dispersion = read_file_if_exists(config["dispersion_path"])
 	prior_sd = read_file_if_exists(config["prior_sd_path"])
-	dispersion_model = config["dispersion_model"]
+	dispersion_model_path = config["dispersion_model_path"]
+	observation_wise = config["observation_wise"]
 	config["x_map"] = x_map
 	#config["z_map"] = z_map
 
@@ -250,41 +251,39 @@ def construct_model(config):
 	print("X: ", X.shape)
 	# if Z is not None:
 	# 	print("Z: ", Z.shape)
-	if dispersion is not None:
-		print("dispersion: ", dispersion.shape)
-	else:
-		print("dispersion unspecified and will be estimated using " + ("log linear model." if dispersion_model else "feature-specific parameterization."))
 	if prior_sd is not None:
 		print("prior_sd: ", prior_sd.shape)
 	else:
 		print("prior_sd unspecified and will be estimated.")
 
-	if dispersion_model:
-		disp_model = DispersionModel(Y, feature_specific_intercept=config["feature_specific_intercept"], estimate_sd=config["estimate_dispersion_sd"])
-		model = NBSRDispersion(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
+	data_path = config["data_path"]
+	disp_model = None
+	import pdb; pdb.set_trace()
+	if dispersion is not None:
+		print("Dispersion parameters are pre-specified: ", dispersion.shape)
+		# Run NBSR with pre-specified dispersion.
+		model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	else:
-		if config["grbf"]:
-			# load GRBF model.
-			data_path = config["data_path"]
-			deseq2_path = os.path.join(data_path, "deseq2_mu.csv")
-			if not os.path.exists(deseq2_path):
-				print(f"DESeq2 mean expression file not available on {deseq2_path}. Terminating program...")
-				sys.exit()
-			deseq2_mu = pd.read_csv(os.path.join(data_path, "deseq2_mu.csv"))
-			deseq2_mu = torch.tensor(deseq2_mu.transpose().to_numpy())
-			mu_bar = torch.mean(deseq2_mu, 0)
-			grbf_model_path = os.path.join(data_path, 'grbf_model.pth')
-			if not os.path.exists(grbf_model_path):
-				print(f"GRBF model is not available on {grbf_model_path}. Terminating program...")
-				sys.exit()
-			grbf_model = torch.load(os.path.join(data_path, 'grbf_model.pth'))
-			model = NegativeBinomialRegressionModel(X, Y, mu_bar=mu_bar, dispersion_prior=grbf_model, dispersion=None, prior_sd=prior_sd, pivot=config["pivot"])
+		if dispersion_model_path is not None:
+			print(f"Dispersion prior model is pre-specified. Loading from {dispersion_model_path}")
+			disp_model = torch.load(os.path.join(data_path, dispersion_model_path))
+			if config["free_dispersion"]:
+				print("Using free-feature wise parameterization.")
+				model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, prior_sd=prior_sd, pivot=config["pivot"])
+			else:
+				model = NBSRTrended(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
 		else:
-			model = NegativeBinomialRegressionModel(X, Y, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
-	# else:
-	# 	model = ZINBSR(X, Y, Z, config["logistic_max"], dispersion, prior_sd=prior_sd, pivot=config["pivot"])
-	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
+			print("Dispersion is unspecified and it will be estimated.")
+			if observation_wise:
+				print("Using trended-observation wise parameterization. Trend will be jointly estimated with NBSR parameters.")
+				disp_model = DispersionModel(Y, Z, feature_specific_intercept=config["feature_specific_intercept"], 
+								 estimate_sd=config["estimate_sd"])
+				model = NBSRTrended(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
+			else:
+				print("Using free-feature wise parameterization.")
+				model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, prior_sd=prior_sd, pivot=config["pivot"])
 
+	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 	print(torch.get_default_dtype())
 	print(model.X.dtype, model.Y.dtype)
 	return model
@@ -343,7 +342,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	pi, _ = model.predict(model.beta, model.X)
 	if isinstance(model, ZINBSR):
 		np.savetxt(os.path.join(output_path, "nbsr_zinb_coef.csv"), model.b.data.numpy().transpose(), delimiter=',')
-	if isinstance(model, NBSRDispersion):
+	if isinstance(model, NBSRTrended):
 		phi = torch.exp(model.disp_model(torch.log(pi)))
 		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b0.csv"), model.disp_model.b0.data.numpy().transpose(), delimiter=',')
 		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b1.csv"), model.disp_model.b1.data.numpy().transpose(), delimiter=',')
@@ -362,7 +361,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	print("Converged? " + str(converged))
 	return(curr_best_loss)
 
-def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, grbf):
+def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, estimate_dispersion_sd, dispersion_model_path, observation_wise, free_dispersion, pivot):
 	config = {
 		"data_path": data_path,
 		"output_path": output_path,
@@ -373,34 +372,32 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 		"column_names": cols,
 		"z_columns": z_cols,
 		"lr": lr,
-		"logistic_max": logistic_max,
 		"lam": lam,
 		"shape": shape,
 		"scale": scale,
-		"dispersion_model": dispersion_model,
 		"estimate_dispersion_sd": estimate_dispersion_sd,
-		"feature_specific_intercept": feature_specific_intercept,
-		"pivot": pivot,
-		"grbf": grbf
+		"free_dispersion": free_dispersion,
+		"dispersion_model_path": dispersion_model_path,
+		"observation_wise": observation_wise,
+		"pivot": pivot
 	}
 	return config
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
+@click.option('-f', '--mu_file', default="deseq2_mu.csv", type=str, help="File name containing the initial fit for mu.")
 @click.option('--eb_iter', default=3000, type=int, help="NBSR dispersion model training iterations.")
 @click.option('--eb_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
-@click.option('-i', '--nbsr_iter', default=10000, type=int, help="NBSR dispersion model training iterations.")
-@click.option('-l', '--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
-def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
+def eb2(data_path, vars, mu_file, eb_iter, eb_lr):
 	# Read in the mean expression.
 	# Optimize NBSREmpiricalBayes to get MLE dispersions.
 	# Fit GRBF with phi_mle ~ f(mu_bar).
 	# Obtain the mean dispersion and use it for fitting NBSR and output it to file.
 	print("Performing Empirical Bayes estimation of dispersion.")
 	column_names = list(vars)
-	deseq2_mu = pd.read_csv(os.path.join(data_path, "deseq2_mu.csv"))
-	deseq2_mu = torch.tensor(deseq2_mu.transpose().to_numpy())
+	mu_hat = pd.read_csv(os.path.join(data_path, mu_file))
+	mu_hat = torch.tensor(mu_hat.transpose().to_numpy())
 	counts_pd = pd.read_csv(os.path.join(data_path, "Y.csv"))
 	if os.path.exists(os.path.join(data_path, "X.csv")):
 		coldata_pd = pd.read_csv(os.path.join(data_path, "X.csv"), na_filter=False, skipinitialspace=True)
@@ -409,11 +406,11 @@ def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
 	X,_ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
 
-	pi_hat = deseq2_mu / deseq2_mu.sum(dim=1, keepdim=True)
+	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
 	log_pi_hat = torch.log(pi_hat)
 
 	disp_model = DispersionModel(Y, feature_specific_intercept=False, estimate_sd=False)
-	nbsr_model = NBSRDispersion(X, Y, disp_model=disp_model)
+	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model)
 	optimizer = torch.optim.Adam(nbsr_model.disp_model.parameters(),lr=eb_lr)
 	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
 	for i in range(eb_iter):
@@ -438,68 +435,87 @@ def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
 	torch.save(disp_model, os.path.join(data_path, 'disp_model.pth'))
 
 	# Fit NBSR model using the dispersion model.
-	parameters = []
-	for name, param in nbsr_model.named_parameters():
-		print(name)
-		if "disp_model" in name:
-			continue
-		print("add")
-		parameters.append(param)
-	optimizer = torch.optim.Adam(parameters,lr=nbsr_lr)
-	nbsr_model.specify_beta_prior(1., 3., 2.)
-	loss_history, best_model_state, best_loss, converged = fit_posterior(nbsr_model, optimizer, nbsr_iter, 1e-3, 50)
-	pi, _ = nbsr_model.predict(nbsr_model.beta, nbsr_model.X)
-	log_pi = torch.log(pi.detach())
-	phi = torch.exp(nbsr_model.disp_model.forward(log_pi))
-	np.savetxt(os.path.join(data_path, "nbsr_beta.csv"), nbsr_model.beta.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(data_path, "nbsr_beta_sd.csv"), nbsr_model.softplus(nbsr_model.psi.data).numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(data_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(data_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
+	# losses = []
+	# for run_no in range(runs):
+	# 	outpath = os.path.join(data_path, "run" + str(run_no))
+	# 	config = get_config(data_path, outpath, list(vars), None, nbsr_lr, 0, lam, shape, scale, True, True, False, pivot, False)
+	# 	state = {"config": config}
+	# 	loss = run(state, iterations, tol, lookback_iterations)
+	# 	losses.append(loss)
 
-	model_state = {
-		'model_state_dict': nbsr_model.state_dict(),
-		'best_model_state_dict': best_model_state,
-		'optimizer_state_dict': optimizer.state_dict(),
-		'loss': loss_history,
-		'best_loss': loss_history,
-		'converged': converged
-	}
-	torch.save({
-		'model_state': model_state,
-        'config': None
-        }, os.path.join(data_path, 'checkpoint.pth'))
+	# # Find the best run and copy the results and checkpoint file up to the data_path.
+	# best_run = np.argmin(np.array(losses))
+	# best_run_path = os.path.join(data_path, "run" + str(best_run))
+	# for filename in os.listdir(best_run_path):
+	# 	file_path = os.path.join(best_run_path, filename)
+	# 	if os.path.isfile(file_path):
+	# 		# Copy each file to data_path
+	# 		shutil.copy2(file_path, os.path.join(data_path, filename))
+
+	# # Obtain Hessian matrix.
+	# state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
+	# model, _ = load_model_from_state_dict(state_dict, config)
+	# I = compute_observed_information(model)
+	# np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
+
+	# parameters = []
+	# for name, param in nbsr_model.named_parameters():
+	# 	print(name)
+	# 	if "disp_model" in name:
+	# 		continue
+	# 	print("add")
+	# 	parameters.append(param)
+	# optimizer = torch.optim.Adam(parameters,lr=nbsr_lr)
+	# nbsr_model.specify_beta_prior(1., 3., 2.)
+	# loss_history, best_model_state, best_loss, converged = fit_posterior(nbsr_model, optimizer, nbsr_iter, 1e-3, 50)
+	# pi, _ = nbsr_model.predict(nbsr_model.beta, nbsr_model.X)
+	# log_pi = torch.log(pi.detach())
+	# phi = torch.exp(nbsr_model.disp_model.forward(log_pi))
+	# np.savetxt(os.path.join(data_path, "nbsr_beta.csv"), nbsr_model.beta.data.numpy().transpose(), delimiter=',')
+	# np.savetxt(os.path.join(data_path, "nbsr_beta_sd.csv"), nbsr_model.softplus(nbsr_model.psi.data).numpy().transpose(), delimiter=',')
+	# np.savetxt(os.path.join(data_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
+	# np.savetxt(os.path.join(data_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
+
+	# model_state = {
+	# 	'model_state_dict': nbsr_model.state_dict(),
+	# 	'best_model_state_dict': best_model_state,
+	# 	'optimizer_state_dict': optimizer.state_dict(),
+	# 	'loss': loss_history,
+	# 	'best_loss': loss_history,
+	# 	'converged': converged
+	# }
+	# torch.save({
+	# 	'model_state': model_state,
+    #     'config': None
+    #     }, os.path.join(data_path, 'checkpoint.pth'))
 	
 	# Obtain Hessian matrix.
 	#state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
-	I = compute_observed_information(nbsr_model)
-	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
+	# I = compute_observed_information(nbsr_model)
+	# np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
-@click.argument('vars', nargs=-1)
+@click.option('-f', '--mu_file', default="deseq2_mu.csv", type=str, help="File name containing the initial fit for mu.")
 @click.option('--nbsr_iter', default=5000, type=int, help="NBSR dispersion model training iterations.")
 @click.option('--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
 @click.option('--grbf_iter', default=5000, type=int, help="GRBF model training iterations.")
 @click.option('--grbf_lr', default=0.05, type=float, help="GRBF model parameters learning rate.")
 @click.option('--knot_count', default=10, type=int, help="GRBF model number of knots.")
 @click.option('--grbf_sd', default=0.5, type=float, help="GRBF model standard deviation parameter.")
-def eb(data_path, vars, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf_sd):
-	# Read in the mean expression.
+def eb(data_path, mu_file, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf_sd):
+	# Read in the mean expression, mu.
 	# Optimize NBSREmpiricalBayes to get MLE dispersions.
-	# Fit GRBF with phi_mle ~ f(mu_bar).
-	# Obtain the mean dispersion and use it for fitting NBSR and output it to file.
+	# Convert the mean expression to relative expression pi.
+	# Fit GRBF with phi_mle ~ f(log(pi_bar)).
+	# Output the fitted GRBF model.
 	print("Performing Empirical Bayes estimation of dispersion.")
-	column_names = list(vars)
-	deseq2_mu = pd.read_csv(os.path.join(data_path, "deseq2_mu.csv"))
-	deseq2_mu = torch.tensor(deseq2_mu.transpose().to_numpy())
+	#column_names = list(vars)
+	mu_hat = pd.read_csv(os.path.join(data_path, mu_file))
+	mu_hat = torch.tensor(mu_hat.transpose().to_numpy())
 	counts_pd = pd.read_csv(os.path.join(data_path, "Y.csv"))
-	if os.path.exists(os.path.join(data_path, "X.csv")):
-		coldata_pd = pd.read_csv(os.path.join(data_path, "X.csv"), na_filter=False, skipinitialspace=True)
-	else:
-		coldata_pd = None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
-	X,_ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
-	nbsr_eb_model = NBSREmpiricalBayes(X, Y, deseq2_mu)
+	nbsr_eb_model = NBSREmpiricalBayes(Y, mu_hat)
 	optimizer = torch.optim.Adam(nbsr_eb_model.parameters(),lr=nbsr_lr)
 	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
 	for i in range(nbsr_iter):
@@ -511,56 +527,60 @@ def eb(data_path, vars, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf
 			print("Iter:", i)
 			print(loss.data)
 	phi_mle = softplus(nbsr_eb_model.phi)
-	mu_bar = torch.mean(deseq2_mu, 0)
-	log_mu_bar = torch.log(mu_bar)
-	min_val = torch.min(log_mu_bar.data)
-	max_val = torch.max(log_mu_bar.data)
+	
+	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
+	pi_bar = torch.mean(pi_hat, 0)	
+	log_pi_bar = torch.log(pi_bar)
+	min_val = torch.min(log_pi_bar.data)
+	max_val = torch.max(log_pi_bar.data)
+
 	grbf_model = GaussianRBF(min_val, max_val, sd=grbf_sd, knot_count=knot_count)
 	optimizer = torch.optim.Adam(grbf_model.parameters(),lr=grbf_lr)
-	grbf_model.log_density(phi_mle, mu_bar)
+	#grbf_model.log_density(phi_mle, log_pi_bar)
 	print("Optimizing GRBF model parameters.")
 	for i in range(grbf_iter):
-		loss = -grbf_model.log_density(phi_mle, mu_bar)
+		loss = -grbf_model.log_density(phi_mle, pi_bar)
 		optimizer.zero_grad()
 		loss.backward(retain_graph=True)
 		optimizer.step()
 		if i % 100 == 0:
 			print("Iter:", i)
 			print(loss.data)
-	f_mean = evaluate_mean(mu_bar, grbf_model.beta, grbf_model.centers, grbf_model.h)[0]
+	f_mean = evaluate_mean(pi_bar, grbf_model.beta, grbf_model.centers, grbf_model.h)[0]
 	mean_dispersion = torch.exp(f_mean)
 	np.savetxt(os.path.join(data_path, "eb_dispersion.csv"), phi_mle.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "dispersion.csv"), mean_dispersion.data.numpy().transpose(), delimiter=',')
-	
-	torch.save(grbf_model, os.path.join(data_path, 'grbf_model.pth'))
-	# torch.save({
-	# 	'model_state': grbf_model.state_dict()
-    #     }, os.path.join(data_path, 'grbf_model.pth'))
+	torch.save(grbf_model, os.path.join(data_path, 'disp_model.pth'))
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
 @click.option('-i', '--iterations', default=10000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
-@click.option('-L', '--logistic_max', default=0.2, type=float, help="ZINBSR max value for logistic function.")
 @click.option('-r', '--runs', default=1, type= int, help="Number of optimization runs (initialization).")
-@click.option('--z_columns', multiple=True, help="Enter list of strings specifying the covariate names to use for zero inflation.")
+@click.option('--z_columns', multiple=True, help="Enter list of strings specifying the covariate names to use for the dispersion model.")
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
-@click.option('--dispersion_model', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--dispersion_model_path', default=None, type=str)
+@click.option('--observation_wise', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--free_dispersion', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
-@click.option('--feature_specific_intercept', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-@click.option('--grbf', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, runs, logistic_max, z_columns, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, grbf, tol, lookback_iterations):
+def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, dispersion_model_path, observation_wise, free_dispersion, estimate_dispersion_sd, pivot, tol, lookback_iterations):
 
 	losses = []
 	for run_no in range(runs):
 		outpath = os.path.join(data_path, "run" + str(run_no))
-		config = get_config(data_path, outpath, list(vars), list(z_columns), lr, logistic_max, lam, shape, scale, dispersion_model, estimate_dispersion_sd, feature_specific_intercept, pivot, grbf)
+		config = get_config(data_path=data_path, output_path=outpath, cols=list(vars), z_cols=list(z_columns), 
+					  lr=lr, lam=lam, shape=shape, scale=scale, 
+					  estimate_dispersion_sd=estimate_dispersion_sd,
+					  dispersion_model_path=dispersion_model_path, 
+					  observation_wise=observation_wise, 
+					  free_dispersion=free_dispersion,
+					  pivot=pivot)
 		state = {"config": config}
 		loss = run(state, iterations, tol, lookback_iterations)
 		losses.append(loss)

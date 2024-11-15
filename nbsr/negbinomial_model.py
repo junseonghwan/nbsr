@@ -5,6 +5,7 @@ from scipy.stats import invgamma
 
 from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
 
+# This model implements free to vary dispersion parameterization.
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
     def __init__(self, X, Y, mu_bar=None, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
