@@ -390,8 +390,8 @@ def get_config(data_path, output_path, cols, z_cols, lr, logistic_max, lam, shap
 @click.argument('vars', nargs=-1)
 @click.option('--eb_iter', default=3000, type=int, help="NBSR dispersion model training iterations.")
 @click.option('--eb_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
-@click.option('--nbsr_iter', default=10000, type=int, help="NBSR dispersion model training iterations.")
-@click.option('--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
+@click.option('-i', '--nbsr_iter', default=10000, type=int, help="NBSR dispersion model training iterations.")
+@click.option('-l', '--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
 def eb2(data_path, vars, eb_iter, eb_lr, nbsr_iter, nbsr_lr):
 	# Read in the mean expression.
 	# Optimize NBSREmpiricalBayes to get MLE dispersions.
