@@ -240,12 +240,15 @@ def construct_model(config):
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
 	X, x_map = construct_tensor_from_coldata(coldata_pd, config["column_names"], counts_pd.shape[1])
 	#Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
+	# Update the x_map and save it.
+	config["x_map"] = x_map
+	#config["z_map"] = z_map
+
+	data_path = config["data_path"]
 	dispersion = read_file_if_exists(config["dispersion_path"])
 	prior_sd = read_file_if_exists(config["prior_sd_path"])
 	dispersion_model_path = config["dispersion_model_path"]
-	observation_wise = config["observation_wise"]
-	config["x_map"] = x_map
-	#config["z_map"] = z_map
+	trended = config["trended_dispersion"]
 
 	print("Y: ", Y.shape)
 	print("X: ", X.shape)
@@ -256,32 +259,22 @@ def construct_model(config):
 	else:
 		print("prior_sd unspecified and will be estimated.")
 
-	data_path = config["data_path"]
-	disp_model = None
 	import pdb; pdb.set_trace()
+	disp_model = None
 	if dispersion is not None:
-		print("Dispersion parameters are pre-specified: ", dispersion.shape)
-		# Run NBSR with pre-specified dispersion.
+		print("Run NBSR with pre-specified dispersion values.")
 		model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, dispersion=dispersion, prior_sd=prior_sd, pivot=config["pivot"])
 	else:
 		if dispersion_model_path is not None:
 			print(f"Dispersion prior model is pre-specified. Loading from {dispersion_model_path}")
 			disp_model = torch.load(os.path.join(data_path, dispersion_model_path))
-			if config["free_dispersion"]:
-				print("Using free-feature wise parameterization.")
-				model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, prior_sd=prior_sd, pivot=config["pivot"])
-			else:
-				model = NBSRTrended(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
+		if trended:
+			if disp_model is None:
+				print(f"Dispersion trend will be estimated.")
+				disp_model = DispersionModel(Y, estimate_sd=config["estimate_dispersion_sd"])
+			model = NBSRTrended(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
 		else:
-			print("Dispersion is unspecified and it will be estimated.")
-			if observation_wise:
-				print("Using trended-observation wise parameterization. Trend will be jointly estimated with NBSR parameters.")
-				disp_model = DispersionModel(Y, Z, feature_specific_intercept=config["feature_specific_intercept"], 
-								 estimate_sd=config["estimate_sd"])
-				model = NBSRTrended(X, Y, disp_model, prior_sd=prior_sd, pivot=config["pivot"])
-			else:
-				print("Using free-feature wise parameterization.")
-				model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, prior_sd=prior_sd, pivot=config["pivot"])
+			model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, prior_sd=prior_sd, pivot=config["pivot"])
 
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 	print(torch.get_default_dtype())
@@ -340,15 +333,13 @@ def run(state_dict, iterations, tol, lookback_iterations):
 
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.beta, model.X)
-	if isinstance(model, ZINBSR):
-		np.savetxt(os.path.join(output_path, "nbsr_zinb_coef.csv"), model.b.data.numpy().transpose(), delimiter=',')
 	if isinstance(model, NBSRTrended):
-		phi = torch.exp(model.disp_model(torch.log(pi)))
+		phi = torch.exp(model.disp_model(pi))
 		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b0.csv"), model.disp_model.b0.data.numpy().transpose(), delimiter=',')
 		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b1.csv"), model.disp_model.b1.data.numpy().transpose(), delimiter=',')
 		np.savetxt(os.path.join(output_path, "nbsr_dispersion_b2.csv"), model.disp_model.b2.data.numpy().transpose(), delimiter=',')
 		if config["estimate_dispersion_sd"]:
-			np.savetxt(os.path.join(output_path, "nbsr_dispersion_sd.csv"), model.disp_model.softplus(model.disp_model.tau).data.numpy().transpose(), delimiter=',')
+			np.savetxt(os.path.join(output_path, "nbsr_dispersion_sd.csv"), model.disp_model.get_sd().data.numpy().transpose(), delimiter=',')
 	else:
 		phi = model.softplus(model.phi)
 
@@ -361,7 +352,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	print("Converged? " + str(converged))
 	return(curr_best_loss)
 
-def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, estimate_dispersion_sd, dispersion_model_path, observation_wise, free_dispersion, pivot):
+def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, estimate_dispersion_sd, dispersion_model_path, trended_dispersion, pivot):
 	config = {
 		"data_path": data_path,
 		"output_path": output_path,
@@ -376,9 +367,8 @@ def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, esti
 		"shape": shape,
 		"scale": scale,
 		"estimate_dispersion_sd": estimate_dispersion_sd,
-		"free_dispersion": free_dispersion,
+		"trended_dispersion": trended_dispersion,
 		"dispersion_model_path": dispersion_model_path,
-		"observation_wise": observation_wise,
 		"pivot": pivot
 	}
 	return config
@@ -407,14 +397,13 @@ def eb2(data_path, vars, mu_file, eb_iter, eb_lr):
 	X,_ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
 
 	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
-	log_pi_hat = torch.log(pi_hat)
 
-	disp_model = DispersionModel(Y, feature_specific_intercept=False, estimate_sd=False)
+	disp_model = DispersionModel(Y, estimate_sd=False)
 	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model)
 	optimizer = torch.optim.Adam(nbsr_model.disp_model.parameters(),lr=eb_lr)
 	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
 	for i in range(eb_iter):
-		phi = torch.exp(nbsr_model.disp_model.forward(log_pi_hat))
+		phi = torch.exp(nbsr_model.disp_model.forward(pi_hat))
 		log_prior = nbsr_model.disp_model.log_prior()
 		loss = -(nbsr_model.log_likelihood(pi_hat, phi) + log_prior)
 		if loss.isnan():
@@ -427,72 +416,12 @@ def eb2(data_path, vars, mu_file, eb_iter, eb_lr):
 			print("Iter:", i)
 			print(loss.data)
 
-	phi = torch.exp(nbsr_model.disp_model.forward(log_pi_hat))
+	phi = torch.exp(nbsr_model.disp_model.forward(pi_hat))
 	np.savetxt(os.path.join(data_path, "eb_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b0.csv"), nbsr_model.disp_model.b0.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b1.csv"), nbsr_model.disp_model.b1.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b2.csv"), nbsr_model.disp_model.b2.data.numpy().transpose(), delimiter=',')
 	torch.save(disp_model, os.path.join(data_path, 'disp_model.pth'))
-
-	# Fit NBSR model using the dispersion model.
-	# losses = []
-	# for run_no in range(runs):
-	# 	outpath = os.path.join(data_path, "run" + str(run_no))
-	# 	config = get_config(data_path, outpath, list(vars), None, nbsr_lr, 0, lam, shape, scale, True, True, False, pivot, False)
-	# 	state = {"config": config}
-	# 	loss = run(state, iterations, tol, lookback_iterations)
-	# 	losses.append(loss)
-
-	# # Find the best run and copy the results and checkpoint file up to the data_path.
-	# best_run = np.argmin(np.array(losses))
-	# best_run_path = os.path.join(data_path, "run" + str(best_run))
-	# for filename in os.listdir(best_run_path):
-	# 	file_path = os.path.join(best_run_path, filename)
-	# 	if os.path.isfile(file_path):
-	# 		# Copy each file to data_path
-	# 		shutil.copy2(file_path, os.path.join(data_path, filename))
-
-	# # Obtain Hessian matrix.
-	# state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
-	# model, _ = load_model_from_state_dict(state_dict, config)
-	# I = compute_observed_information(model)
-	# np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
-
-	# parameters = []
-	# for name, param in nbsr_model.named_parameters():
-	# 	print(name)
-	# 	if "disp_model" in name:
-	# 		continue
-	# 	print("add")
-	# 	parameters.append(param)
-	# optimizer = torch.optim.Adam(parameters,lr=nbsr_lr)
-	# nbsr_model.specify_beta_prior(1., 3., 2.)
-	# loss_history, best_model_state, best_loss, converged = fit_posterior(nbsr_model, optimizer, nbsr_iter, 1e-3, 50)
-	# pi, _ = nbsr_model.predict(nbsr_model.beta, nbsr_model.X)
-	# log_pi = torch.log(pi.detach())
-	# phi = torch.exp(nbsr_model.disp_model.forward(log_pi))
-	# np.savetxt(os.path.join(data_path, "nbsr_beta.csv"), nbsr_model.beta.data.numpy().transpose(), delimiter=',')
-	# np.savetxt(os.path.join(data_path, "nbsr_beta_sd.csv"), nbsr_model.softplus(nbsr_model.psi.data).numpy().transpose(), delimiter=',')
-	# np.savetxt(os.path.join(data_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
-	# np.savetxt(os.path.join(data_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
-
-	# model_state = {
-	# 	'model_state_dict': nbsr_model.state_dict(),
-	# 	'best_model_state_dict': best_model_state,
-	# 	'optimizer_state_dict': optimizer.state_dict(),
-	# 	'loss': loss_history,
-	# 	'best_loss': loss_history,
-	# 	'converged': converged
-	# }
-	# torch.save({
-	# 	'model_state': model_state,
-    #     'config': None
-    #     }, os.path.join(data_path, 'checkpoint.pth'))
-	
-	# Obtain Hessian matrix.
-	#state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
-	# I = compute_observed_information(nbsr_model)
-	# np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
@@ -526,6 +455,10 @@ def eb(data_path, mu_file, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, g
 		if i % 100 == 0:
 			print("Iter:", i)
 			print(loss.data)
+		if loss.isnan():
+			import pdb; pdb.set_trace()
+			print("nan")
+			break
 	phi_mle = softplus(nbsr_eb_model.phi)
 	
 	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
@@ -548,13 +481,14 @@ def eb(data_path, mu_file, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, g
 			print(loss.data)
 	f_mean = evaluate_mean(pi_bar, grbf_model.beta, grbf_model.centers, grbf_model.h)[0]
 	mean_dispersion = torch.exp(f_mean)
-	np.savetxt(os.path.join(data_path, "eb_dispersion.csv"), phi_mle.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(data_path, "dispersion.csv"), mean_dispersion.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "mle_dispersion.csv"), phi_mle.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "grbf_dispersion.csv"), mean_dispersion.data.numpy().transpose(), delimiter=',')
 	torch.save(grbf_model, os.path.join(data_path, 'disp_model.pth'))
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
+@click.option('-d', '--dispersion_model_file', default=None, type=str)
 @click.option('-i', '--iterations', default=10000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('-r', '--runs', default=1, type= int, help="Number of optimization runs (initialization).")
@@ -562,14 +496,12 @@ def eb(data_path, mu_file, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, g
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
-@click.option('--dispersion_model_path', default=None, type=str)
-@click.option('--observation_wise', is_flag=True, show_default=True, default=False, type=bool)
-@click.option('--free_dispersion', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--trended_dispersion', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, dispersion_model_path, observation_wise, free_dispersion, estimate_dispersion_sd, pivot, tol, lookback_iterations):
+def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, pivot, tol, lookback_iterations):
 
 	losses = []
 	for run_no in range(runs):
@@ -577,9 +509,8 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 		config = get_config(data_path=data_path, output_path=outpath, cols=list(vars), z_cols=list(z_columns), 
 					  lr=lr, lam=lam, shape=shape, scale=scale, 
 					  estimate_dispersion_sd=estimate_dispersion_sd,
-					  dispersion_model_path=dispersion_model_path, 
-					  observation_wise=observation_wise, 
-					  free_dispersion=free_dispersion,
+					  dispersion_model_path=dispersion_model_file, 
+					  trended_dispersion=trended_dispersion, 
 					  pivot=pivot)
 		state = {"config": config}
 		loss = run(state, iterations, tol, lookback_iterations)

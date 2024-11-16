@@ -8,13 +8,12 @@ from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softpl
 # This model implements free to vary dispersion parameterization.
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
-    def __init__(self, X, Y, mu_bar=None, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
         super().__init__()
         assert(isinstance(X, torch.Tensor))
         assert(isinstance(Y, torch.Tensor))
         self.X = X
         self.Y = Y
-        self.mu_bar = mu_bar
         self.s = torch.sum(self.Y, dim=1)  # Summing over rows
         self.pivot = pivot
         self.softplus = torch.nn.Softplus()
@@ -33,12 +32,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         self.dim = self.rna_count - 1 if pivot else self.rna_count
         self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
         #self.beta = torch.nn.Parameter(torch.zeros(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
-        self.dispersion_prior = dispersion_prior
+        self.disp_model = dispersion_prior
         if dispersion is None:
-            if dispersion_prior is not None and mu_bar is not None:
-                self.phi = torch.nn.Parameter(softplus_inv(dispersion_prior.sample(mu_bar)), requires_grad=True)
-            else:
-                self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
+            self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
         if prior_sd is None:
@@ -100,6 +96,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         Returns:
             torch.Tensor: A scalar tensor representing the log posterior probability.
         """
+        pi,_ = self.predict(beta, self.X)
         log_lik = self.log_likelihood(beta)
         sd = self.softplus(self.psi)
         dispersion = self.softplus(self.phi)
@@ -108,8 +105,10 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
         log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
         log_dispersion_prior = 0
-        if self.dispersion_prior is not None:
-            log_dispersion_prior = torch.sum(self.dispersion_prior.log_density(dispersion, self.mu_bar))
+        if self.disp_model is not None:
+            # Take sample average of pi's since we only support feature wise dispersion for standard NBSR.
+            pi_bar = pi.mean(0)
+            log_dispersion_prior = torch.sum(self.disp_model.log_density(dispersion, pi_bar))
         log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
         return(log_posterior)
 

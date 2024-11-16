@@ -15,8 +15,7 @@ from nbsr.dispersion import DispersionModel
 class NBSRTrended(NegativeBinomialRegressionModel):
 
     def __init__(self, X, Y, disp_model, prior_sd=None, pivot=False):
-        super().__init__(X, Y, None, None, None, prior_sd, pivot)
-        self.disp_model = disp_model
+        super().__init__(X, Y, disp_model, None, prior_sd, pivot)
         self.phi = None
 
     def log_likelihood(self, pi, phi):
@@ -27,8 +26,7 @@ class NBSRTrended(NegativeBinomialRegressionModel):
 
     def log_posterior(self, beta):
         pi,_ = self.predict(beta, self.X)
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(pi))
 
         # Compute the log likelihood of Y
         log_lik = self.log_likelihood(pi, phi)
