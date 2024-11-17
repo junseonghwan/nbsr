@@ -1,6 +1,7 @@
 import os
 import copy
 import shutil
+import json
 
 import click
 import pandas as pd
@@ -259,7 +260,6 @@ def construct_model(config):
 	else:
 		print("prior_sd unspecified and will be estimated.")
 
-	import pdb; pdb.set_trace()
 	disp_model = None
 	if dispersion is not None:
 		print("Run NBSR with pre-specified dispersion values.")
@@ -379,7 +379,7 @@ def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, esti
 @click.option('-f', '--mu_file', default="deseq2_mu.csv", type=str, help="File name containing the initial fit for mu.")
 @click.option('--eb_iter', default=3000, type=int, help="NBSR dispersion model training iterations.")
 @click.option('--eb_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
-def eb2(data_path, vars, mu_file, eb_iter, eb_lr):
+def eb(data_path, vars, mu_file, eb_iter, eb_lr):
 	# Read in the mean expression.
 	# Optimize NBSREmpiricalBayes to get MLE dispersions.
 	# Fit GRBF with phi_mle ~ f(mu_bar).
@@ -425,68 +425,6 @@ def eb2(data_path, vars, mu_file, eb_iter, eb_lr):
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
-@click.option('-f', '--mu_file', default="deseq2_mu.csv", type=str, help="File name containing the initial fit for mu.")
-@click.option('--nbsr_iter', default=5000, type=int, help="NBSR dispersion model training iterations.")
-@click.option('--nbsr_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
-@click.option('--grbf_iter', default=5000, type=int, help="GRBF model training iterations.")
-@click.option('--grbf_lr', default=0.05, type=float, help="GRBF model parameters learning rate.")
-@click.option('--knot_count', default=10, type=int, help="GRBF model number of knots.")
-@click.option('--grbf_sd', default=0.5, type=float, help="GRBF model standard deviation parameter.")
-def eb(data_path, mu_file, nbsr_iter, nbsr_lr, grbf_iter, grbf_lr, knot_count, grbf_sd):
-	# Read in the mean expression, mu.
-	# Optimize NBSREmpiricalBayes to get MLE dispersions.
-	# Convert the mean expression to relative expression pi.
-	# Fit GRBF with phi_mle ~ f(log(pi_bar)).
-	# Output the fitted GRBF model.
-	print("Performing Empirical Bayes estimation of dispersion.")
-	#column_names = list(vars)
-	mu_hat = pd.read_csv(os.path.join(data_path, mu_file))
-	mu_hat = torch.tensor(mu_hat.transpose().to_numpy())
-	counts_pd = pd.read_csv(os.path.join(data_path, "Y.csv"))
-	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
-	nbsr_eb_model = NBSREmpiricalBayes(Y, mu_hat)
-	optimizer = torch.optim.Adam(nbsr_eb_model.parameters(),lr=nbsr_lr)
-	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
-	for i in range(nbsr_iter):
-		loss = -nbsr_eb_model.log_likelihood()
-		optimizer.zero_grad()
-		loss.backward(retain_graph=True)
-		optimizer.step()
-		if i % 100 == 0:
-			print("Iter:", i)
-			print(loss.data)
-		if loss.isnan():
-			import pdb; pdb.set_trace()
-			print("nan")
-			break
-	phi_mle = softplus(nbsr_eb_model.phi)
-	
-	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
-	pi_bar = torch.mean(pi_hat, 0)	
-	log_pi_bar = torch.log(pi_bar)
-	min_val = torch.min(log_pi_bar.data)
-	max_val = torch.max(log_pi_bar.data)
-
-	grbf_model = GaussianRBF(min_val, max_val, sd=grbf_sd, knot_count=knot_count)
-	optimizer = torch.optim.Adam(grbf_model.parameters(),lr=grbf_lr)
-	#grbf_model.log_density(phi_mle, log_pi_bar)
-	print("Optimizing GRBF model parameters.")
-	for i in range(grbf_iter):
-		loss = -grbf_model.log_density(phi_mle, pi_bar)
-		optimizer.zero_grad()
-		loss.backward(retain_graph=True)
-		optimizer.step()
-		if i % 100 == 0:
-			print("Iter:", i)
-			print(loss.data)
-	f_mean = evaluate_mean(pi_bar, grbf_model.beta, grbf_model.centers, grbf_model.h)[0]
-	mean_dispersion = torch.exp(f_mean)
-	np.savetxt(os.path.join(data_path, "mle_dispersion.csv"), phi_mle.data.numpy().transpose(), delimiter=',')
-	np.savetxt(os.path.join(data_path, "grbf_dispersion.csv"), mean_dispersion.data.numpy().transpose(), delimiter=',')
-	torch.save(grbf_model, os.path.join(data_path, 'disp_model.pth'))
-
-@click.command()
-@click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
 @click.option('-d', '--dispersion_model_file', default=None, type=str)
 @click.option('-i', '--iterations', default=10000, type=int)
@@ -525,6 +463,12 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 			# Copy each file to data_path
 			shutil.copy2(file_path, os.path.join(data_path, filename))
 
+	# Save config file.
+	json_text = json.dumps(config, indent=4)  # `indent` makes the JSON pretty-printed
+
+	with open(os.path.join(data_path, "config.json"), "w") as file:
+		file.write(json_text)
+
 	# Obtain Hessian matrix.
 	state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
 	model, _ = load_model_from_state_dict(state_dict, config)
@@ -560,6 +504,7 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 
 	# Check if hessian matrix exists.
 	# Load it and set it as the observed information matrix on model.
+	#import pdb; pdb.set_trace()
 	I = None
 	if not recompute_hessian and os.path.exists(os.path.join(checkpoint_path, "hessian.csv")):
 		hessian = np.loadtxt(os.path.join(checkpoint_path, "hessian.csv"), delimiter=',')
@@ -576,7 +521,6 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(eb)
-cli.add_command(eb2)
 cli.add_command(train)
 cli.add_command(resume)
 cli.add_command(results)

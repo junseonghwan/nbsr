@@ -47,8 +47,7 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         # Define log_liklihood that uses the new architecture.
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(pi))
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
         return log_lik_vals.sum()
 
@@ -65,8 +64,7 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         """        
         #beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         pi,_ = self.predict(beta, self.X) # N x K
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi)) # N x K
+        phi = torch.exp(self.disp_model.forward(pi)) # N x K
         #J = self.rna_count-1 if self.pivot else self.rna_count
         I_K = torch.eye(self.rna_count) # K x K
         b1_term = (1 + self.disp_model.b1) # scalar

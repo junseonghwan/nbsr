@@ -67,6 +67,9 @@ class GaussianRBF(torch.nn.Module):
             self.centers = None
             self.h = None
 
+    def forward(self, pi):
+        return evaluate_mean(pi, self.beta, self.centers, self.h)[0]
+
     # phi ~ LogNormal(f(mean_expr), sd).
     def log_density(self, phi, pi):
         assert(phi.shape == pi.shape)

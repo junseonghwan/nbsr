@@ -170,7 +170,7 @@ class TestNBSRGradients(unittest.TestCase):
         print("Testing Hessian computation...")
         self.assertTrue(np.allclose(hess_expected, hess_realized))
 
-class TestNBSRDispersionGradients(unittest.TestCase):
+class TestNBSRTrendedGradients(unittest.TestCase):
 
     def test_log_lik_gradient(self):
         d = 3
