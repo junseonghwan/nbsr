@@ -384,9 +384,16 @@ def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, esti
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
 @click.option('-f', '--mu_file', default="deseq2_mu.csv", type=str, help="File name containing the initial fit for mu.")
+@click.option('-i', '--iterations', default=10000, type=int)
+@click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('--eb_iter', default=3000, type=int, help="NBSR dispersion model training iterations.")
 @click.option('--eb_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
-def eb(data_path, vars, mu_file, eb_iter, eb_lr):
+@click.option('--lam', default=1., type=float)
+@click.option('--shape', default=3, type=float)
+@click.option('--scale', default=2, type=float)
+@click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
+@click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
+def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, pivot):
 	# Read in the mean expression.
 	# Optimize NBSREmpiricalBayes to get MLE dispersions.
 	# Fit GRBF with phi_mle ~ f(mu_bar).
@@ -405,8 +412,8 @@ def eb(data_path, vars, mu_file, eb_iter, eb_lr):
 
 	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
 
-	disp_model = DispersionModel(Y, estimate_sd=False)
-	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model)
+	disp_model = DispersionModel(Y, estimate_sd=estimate_dispersion_sd)
+	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model, pivot=pivot)
 	optimizer = torch.optim.Adam(nbsr_model.disp_model.parameters(),lr=eb_lr)
 	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
 	for i in range(eb_iter):
@@ -437,10 +444,10 @@ def eb(data_path, vars, mu_file, eb_iter, eb_lr):
 			continue
 		param_list.append(param)
 
-	nbsr_model.specify_beta_prior(1., 3., 2.)
-	optimizer = torch.optim.Adam(param_list,lr=0.05)
+	nbsr_model.specify_beta_prior(lam, shape, scale)
+	optimizer = torch.optim.Adam(param_list,lr=lr)
 	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
-	for i in range(10000):
+	for i in range(iterations):
 		loss = -nbsr_model.log_posterior(nbsr_model.beta)
 		if loss.isnan():
 			print("nan")
@@ -560,7 +567,6 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(eb)
-cli.add_command(eb2)
 cli.add_command(train)
 cli.add_command(resume)
 cli.add_command(results)
