@@ -394,6 +394,7 @@ def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, esti
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
 def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, pivot):
+
 	# Read in the mean expression.
 	# Optimize NBSREmpiricalBayes to get MLE dispersions.
 	# Fit GRBF with phi_mle ~ f(mu_bar).
@@ -408,7 +409,10 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	else:
 		coldata_pd = None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
-	X,_ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
+	X, x_map = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
+	disp_model_path = "disp_model.pth"
+	config = get_config(data_path, data_path, column_names, None, lr, lam, shape, scale, estimate_dispersion_sd, disp_model_path, True, pivot)
+	config["x_map"] = x_map
 
 	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
 
@@ -437,7 +441,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b1.csv"), nbsr_model.disp_model.b1.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b2.csv"), nbsr_model.disp_model.b2.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_sd.csv"), np.array([sd.data.numpy()]), delimiter=',')
-	torch.save(disp_model, os.path.join(data_path, 'disp_model.pth'))
+	torch.save(disp_model, os.path.join(data_path, disp_model_path))
 
 	# Fit NBSR parameters.
 	param_list = []
@@ -471,6 +475,20 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	I = compute_observed_information(nbsr_model)
 	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
 
+	model_state = {
+		'model_state_dict': nbsr_model.state_dict(),
+		'best_model_state_dict': nbsr_model.state_dict(),
+		'optimizer_state_dict': optimizer.state_dict(),
+		'loss': None,
+		'best_loss': None,
+		'converged': None
+	}
+	torch.save({
+		'model_state': model_state,
+        'config': config
+        }, os.path.join(data_path, 'checkpoint.pth'))
+
+
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
@@ -502,6 +520,12 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 		loss = run(state, iterations, tol, lookback_iterations)
 		losses.append(loss)
 
+		# Save config file.
+		json_text = json.dumps(config, indent=4)  # `indent` makes the JSON pretty-printed
+		with open(os.path.join(outpath, "config.json"), "w") as file:
+			file.write(json_text)
+
+
 	# Find the best run and copy the results and checkpoint file up to the data_path.
 	best_run = np.argmin(np.array(losses))
 	best_run_path = os.path.join(data_path, "run" + str(best_run))
@@ -510,12 +534,6 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 		if os.path.isfile(file_path):
 			# Copy each file to data_path
 			shutil.copy2(file_path, os.path.join(data_path, filename))
-
-	# Save config file.
-	json_text = json.dumps(config, indent=4)  # `indent` makes the JSON pretty-printed
-
-	with open(os.path.join(data_path, "config.json"), "w") as file:
-		file.write(json_text)
 
 	# Obtain Hessian matrix.
 	state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
@@ -548,7 +566,7 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 	create_directory(output_path)
 	print(config["x_map"])
 
-	model, _ = load_model_from_state_dict(state_dict, config)
+	model, _, _ = load_model_from_state_dict(state_dict, config)
 
 	# Check if hessian matrix exists.
 	# Load it and set it as the observed information matrix on model.
