@@ -431,10 +431,12 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 			print(loss.data)
 
 	phi = torch.exp(nbsr_model.disp_model.forward(pi_hat))
+	sd = nbsr_model.disp_model.get_sd()
 	np.savetxt(os.path.join(data_path, "eb_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b0.csv"), nbsr_model.disp_model.b0.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b1.csv"), nbsr_model.disp_model.b1.data.numpy().transpose(), delimiter=',')
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b2.csv"), nbsr_model.disp_model.b2.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_dispersion_sd.csv"), np.array([sd.data.numpy()]), delimiter=',')
 	torch.save(disp_model, os.path.join(data_path, 'disp_model.pth'))
 
 	# Fit NBSR parameters.
