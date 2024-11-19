@@ -78,8 +78,9 @@ class GaussianRBF(torch.nn.Module):
         f_mean_expr, _ = evaluate_mean(pi, self.beta, self.centers, self.h)
         sd = softplus(self.psi)
         log_lik = log_lognormal(phi, f_mean_expr, sd)
-        log_prior0 = log_normal(self.beta, torch.tensor(0), torch.tensor(1))
-        return(log_lik.sum() + log_prior0.sum())
+        #log_prior0 = log_normal(self.beta, torch.tensor(0), torch.tensor(1))
+        #return(log_lik.sum() + log_prior0.sum())
+        return(log_lik.sum())
 
     def sample(self, pi):
         f_mean, _ = evaluate_mean(pi, self.beta, self.centers, self.h)

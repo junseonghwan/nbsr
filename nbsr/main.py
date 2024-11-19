@@ -276,19 +276,26 @@ def construct_model(config):
 		else:
 			model = NegativeBinomialRegressionModel(X, Y, dispersion_prior=disp_model, prior_sd=prior_sd, pivot=config["pivot"])
 
+	param_list = []
+	for name, param in model.named_parameters():
+		print(name)
+		if "disp_model" in name and dispersion_model_path is not None: # don't optimize disp_model parameters.
+			continue
+		param_list.append(param)
+
 	model.specify_beta_prior(config["lam"], config["shape"], config["scale"])
 	print(torch.get_default_dtype())
 	print(model.X.dtype, model.Y.dtype)
-	return model
+	return model, param_list
 
 def load_model_from_state_dict(state_dict, config):
-    model = construct_model(config)
+    model, params = construct_model(config)
     checkpoint = None
     if model_state_key in state_dict:
         print("Loading previously saved model...")
         checkpoint = state_dict[model_state_key]
         model.load_state_dict(checkpoint['model_state_dict'])
-    return model, checkpoint
+    return model, params, checkpoint
 
 def run(state_dict, iterations, tol, lookback_iterations):
 	config = state_dict["config"]
@@ -297,17 +304,17 @@ def run(state_dict, iterations, tol, lookback_iterations):
 
 	lr = config["lr"]
 
-	model, checkpoint = load_model_from_state_dict(state_dict, config)
+	model, params, checkpoint = load_model_from_state_dict(state_dict, config)
 
 	# Initialize optimizers.
 	if checkpoint:
-		optimizer = torch.optim.Adam(model.parameters(), lr = lr)
+		optimizer = torch.optim.Adam(params, lr = lr)
 		optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 		curr_loss_history = checkpoint['loss']
 		curr_best_loss = checkpoint['best_loss']
 		curr_best_model_state = checkpoint['best_model_state_dict']
 	else:
-		optimizer = torch.optim.Adam(model.parameters(), lr = lr)
+		optimizer = torch.optim.Adam(params, lr = lr)
 		curr_loss_history = []
 		curr_best_loss = torch.inf
 		curr_best_model_state = None
@@ -423,6 +430,38 @@ def eb(data_path, vars, mu_file, eb_iter, eb_lr):
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_b2.csv"), nbsr_model.disp_model.b2.data.numpy().transpose(), delimiter=',')
 	torch.save(disp_model, os.path.join(data_path, 'disp_model.pth'))
 
+	# Fit NBSR parameters.
+	param_list = []
+	for name, param in nbsr_model.named_parameters():
+		if "disp_model" in name:
+			continue
+		param_list.append(param)
+
+	nbsr_model.specify_beta_prior(1., 3., 2.)
+	optimizer = torch.optim.Adam(param_list,lr=0.05)
+	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
+	for i in range(10000):
+		loss = -nbsr_model.log_posterior(nbsr_model.beta)
+		if loss.isnan():
+			print("nan")
+			break
+		optimizer.zero_grad()
+		loss.backward(retain_graph=True)
+		optimizer.step()
+		if i % 100 == 0:
+			print("Iter:", i)
+			print(loss.data)
+
+	pi, _ = nbsr_model.predict(nbsr_model.beta, nbsr_model.X)
+	phi = torch.exp(nbsr_model.disp_model.forward(pi))
+	np.savetxt(os.path.join(data_path, "nbsr_beta.csv"), nbsr_model.beta.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_beta_sd.csv"), nbsr_model.softplus(nbsr_model.psi.data).numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_pi.csv"), pi.data.numpy().transpose(), delimiter=',')
+	np.savetxt(os.path.join(data_path, "nbsr_dispersion.csv"), phi.data.numpy().transpose(), delimiter=',')
+
+	I = compute_observed_information(nbsr_model)
+	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
+
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
@@ -471,7 +510,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 
 	# Obtain Hessian matrix.
 	state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
-	model, _ = load_model_from_state_dict(state_dict, config)
+	model, _,  _ = load_model_from_state_dict(state_dict, config)
 	I = compute_observed_information(model)
 	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
 
@@ -521,6 +560,7 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 
 cli.add_command(eb)
+cli.add_command(eb2)
 cli.add_command(train)
 cli.add_command(resume)
 cli.add_command(results)

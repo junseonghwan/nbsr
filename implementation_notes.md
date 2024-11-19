@@ -6,12 +6,28 @@ After some experimentation, we consider two workflows to yield the best results.
 
 Typically, when we talk about feature wise dispersion parameterization, there is no sample specific covariates in the dispersion model as that necessarily yields observation wise dispersion.
 
+Two classes for handling trended vs free dispersion parameterization (`NBSRTrended` vs `NegativeBinomialRegressionModel`):
+
+
 Workflow 1: pre-specify dispersion (from DESeq2 or EdgeR) and run NBSR to see how the results change.
 
-Workflow 2: $N <= 10$ and allowing for observation wise dispersion.
-+ Initial fit of dispersion may be quite large -- so we should cap it at some value or have another prior defined on each $\phi_{ij}$?
-+ When eliciting prior, we fit linear model on observation specific dispersion via trended mean (so estimate dispersion parameters b rather than directly maximing $\phi_{ij}$ and then fitting b -- although both should be tried). Later the linear model can be generalized to be a local regression on $\log \pi_{ij}$.
-+ Then, either fix dispersion values and fit beta for posterior or allow free observation parameters regulated by prior.
+Generate a file containing dispersion estimates and save it as `dispersion.csv` in the `data_path`. Then, run 
+
+`python nbsr/main.py train data_path var1 var2 [options]`. 
+
+As long as the program finds `dispersion.csv` in the `data_path`, `--dispersion_model_path` and `--observation_wise` flags will be ignored; NBSR with dispersion fixed at the pre-specified values will be used.
+
+This will use `NegativeBinomialRegressionModel`.
+
+Workflow 2: observation wise dispersion using initial fit of $\hat{\mu}_{ij}$.
+
++ When eliciting prior, we fit linear model on observation specific dispersion via trended mean. TODO: the linear model can be generalized to local regression on $\log \pi_{ij}$.
+
+`python nbsr/main.py eb data_path var1 var2 -f path_to_mu_hat.csv`
+
+This will first estimate prior model parameters $b$ and then, estimate NBSR parameters using trended dispersion.
+
+This will use `NBSRTrended`.
 
 Workflow 3: observation wise using sample specific covariates and trended ($N > 10$).
 
@@ -19,41 +35,16 @@ Workflow 3: observation wise using sample specific covariates and trended ($N > 
 - no prior elicitation is needed.
 - use trended mean dispersion.
 
+`python nbsr/main.py train data_path var1 var2 -d disp_model.pth --trended_dispersion -r 5`
+
+Run it with different initializations with option `-r 5`.
+
+This will use `NBSRTrended`.
+
 Workflow 4: feature wise ($N > 10$)
 
 - When there are sufficient samples, we can just go for MLE/MAP fit with feature wise dispersion.
 
-Other workflow to consider:
-- Prior elicitation: estimate dispersion model parameters to maximize the likelihood given $\hat{\mu}_{ij}$ -> use it as prior and fit observation wise and free model.
+`python nbsr/main.py train data_path var1 var2 -r 5`
 
-Two classes for handling trended vs free dispersion parameterization (`NBSRTrended` vs `NegativeBinomialRegressionModel`):
-
-So to execute each of the workflows:
-
-0. Generate a file containing dispersion estimates and save it as `dispersion.csv` in the `data_path`. Then, run 
-
-`python nbsr/main.py train data_path var1 var2 [options]`. 
-
-As long as the program finds `dispersion.csv` in the `data_path`, `--dispersion_model_path` and `--observation_wise` flags will be ignored; NBSR with dispersion fixed at the pre-specified values will be used.
-
-1. Run `eb` workflow to generate `disp_model.pth` under `data_path`.
-
-`python nbsr/main.py eb data_path var1 var2 -f path_to_mu_hat.csv`
-
-2. Fit NBSR trended dispersion with dispersion prior:
-
-`python nbsr/main.py train data_path var1 var2 -d disp_model.pth --trended_dispersion`
-
-To fit NBSR trneded dispersion without pre-elicit dispersion prior with 5 random initialization points:
-
-`python nbsr/main.py train data_path var1 var2 --trended_dispersion -r 5`
-
-If no prior is used, we recommend running it for N >= 10 and also to utilize multiple runs.
-
-3. To fit NBSR with free and feature wise dispersion with prior:
-
-`python nbsr/main.py train data_path var1 var2 -d disp_model.pth`
-
-without prior:
-
-`python nbsr/main.py train data_path var1 var2`
+This will use `NegativeBinomialRegressionModel`.
