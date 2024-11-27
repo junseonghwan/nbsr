@@ -202,8 +202,7 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 	cov_mat = torch.bmm(torch.bmm(ret, S_batch), ret.transpose(1, 2))
 
 	logFC = logRRi.data.numpy()
-	std_err = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
-	return (logFC, std_err, I)
+	return (logFC, cov_mat, I)
 
 def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	# Fit the model.
@@ -577,7 +576,8 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 		I = torch.from_numpy(hessian).double()
 
 	res_beta, I = inference_beta(model, var, w1, w0, config["x_map"], I)
-	logRR, logRR_std,_  = inference_logRR(model, var, w1, w0, config["x_map"], I)
+	logRR, cov_mat, _  = inference_logRR(model, var, w1, w0, config["x_map"], I)
+	logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 
 	res_beta.to_csv(os.path.join(checkpoint_path, "nbsr_results.csv"), index=False)
 	# Save Hessian for future use.
@@ -585,6 +585,8 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 		np.savetxt(os.path.join(checkpoint_path, "hessian.csv"), I, delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_logRR.csv"), logRR, delimiter=',')
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
+	# cov_mat is NxKxK tensor. 
+	np.save(os.path.join(output_path, "nbsr_logRR_cov.npy"), cov_mat.data.numpy())
 
 cli.add_command(eb)
 cli.add_command(train)
