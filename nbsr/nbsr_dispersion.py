@@ -11,27 +11,25 @@ from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softpl
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.dispersion import DispersionModel
 
-# This model extends the basic NBSR model with dispersion
-class NBSRDispersion(NegativeBinomialRegressionModel):
+# This model extends the basic NBSR model with trended dispersion given by disp_model.forward(pi).
+class NBSRTrended(NegativeBinomialRegressionModel):
 
     def __init__(self, X, Y, disp_model, prior_sd=None, pivot=False):
-        super().__init__(X, Y, None, None, None, prior_sd, pivot)
-        self.disp_model = disp_model
+        super().__init__(X, Y, disp_model, None, prior_sd, pivot)
         self.phi = None
 
-    def log_likelihood(self, mu, phi):
+    def log_likelihood(self, pi, phi):
         # Define log_liklihood that uses the new architecture.
+        mu = self.s[:,None] * pi
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
         return log_lik_vals.sum()
 
     def log_posterior(self, beta):
         pi,_ = self.predict(beta, self.X)
-        mu = self.s[:, None] * pi
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(pi))
 
         # Compute the log likelihood of Y
-        log_lik = self.log_likelihood(mu, phi)
+        log_lik = self.log_likelihood(pi, phi)
         # Compute the log of prior.
         sd = self.softplus(self.psi)
         # normal prior on beta -- 0 mean and sd = softplus(psi).
@@ -49,8 +47,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         # Define log_liklihood that uses the new architecture.
         pi,_ = self.predict(beta, self.X)
         mu = self.s[:, None] * pi
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi))
+        phi = torch.exp(self.disp_model.forward(pi))
         log_lik_vals = log_negbinomial(self.Y, mu, phi)
         return log_lik_vals.sum()
 
@@ -67,8 +64,7 @@ class NBSRDispersion(NegativeBinomialRegressionModel):
         """        
         #beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         pi,_ = self.predict(beta, self.X) # N x K
-        log_pi = torch.log(pi)
-        phi = torch.exp(self.disp_model.forward(log_pi)) # N x K
+        phi = torch.exp(self.disp_model.forward(pi)) # N x K
         #J = self.rna_count-1 if self.pivot else self.rna_count
         I_K = torch.eye(self.rna_count) # K x K
         b1_term = (1 + self.disp_model.b1) # scalar

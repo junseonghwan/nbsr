@@ -67,19 +67,23 @@ class GaussianRBF(torch.nn.Module):
             self.centers = None
             self.h = None
 
+    def forward(self, pi):
+        return evaluate_mean(pi, self.beta, self.centers, self.h)[0]
+
     # phi ~ LogNormal(f(mean_expr), sd).
-    def log_density(self, phi, mean_expr):
-        assert(phi.shape == mean_expr.shape)
+    def log_density(self, phi, pi):
+        assert(phi.shape == pi.shape)
         # log_phi: log of dispersion values of dimension Kx1.
         # mean_expr: mean expression values of dimension Kx1.
-        f_mean_expr, _ = evaluate_mean(mean_expr, self.beta, self.centers, self.h)
+        f_mean_expr, _ = evaluate_mean(pi, self.beta, self.centers, self.h)
         sd = softplus(self.psi)
         log_lik = log_lognormal(phi, f_mean_expr, sd)
-        log_prior0 = log_normal(self.beta, torch.tensor(0), torch.tensor(1))
-        return(log_lik.sum() + log_prior0.sum())
+        #log_prior0 = log_normal(self.beta, torch.tensor(0), torch.tensor(1))
+        #return(log_lik.sum() + log_prior0.sum())
+        return(log_lik.sum())
 
-    def sample(self, mean_expr):
-        f_mean, _ = evaluate_mean(mean_expr, self.beta, self.centers, self.h)
-        z = torch.randn(mean_expr.shape)
+    def sample(self, pi):
+        f_mean, _ = evaluate_mean(pi, self.beta, self.centers, self.h)
+        z = torch.randn(pi.shape)
         sd = softplus(self.psi)
         return(torch.exp(f_mean + sd*z))

@@ -4,9 +4,8 @@ from nbsr.distributions import log_negbinomial, softplus
 
 # Estimates feature specific dispersion parameters.
 class NBSREmpiricalBayes(torch.nn.Module):
-    def __init__(self, X, Y, mu):
+    def __init__(self, Y, mu):
         super().__init__()
-        self.X = X
         self.Y = Y
         self.mu = mu
         self.feature_count = self.Y.shape[1]
