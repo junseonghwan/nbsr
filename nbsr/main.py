@@ -149,7 +149,7 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
 	col_idx0 = x_map[var_level0] if var_level0 in x_map else None
 	col_idx1 = x_map[var_level1] if var_level1 in x_map else None
-	print(col_idx0, col_idx1)
+	#print(col_idx0, col_idx1)
 
 	Z0 = model.X.clone()
 	Z1 = model.X.clone()
@@ -167,7 +167,7 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 	if col_idx1 is not None:
 		Z1[:,col_idx1+1] = 1
 		found = True
-	#print(found)
+	print(f"Found covariate {var} in the model.")
 	pi0, _ = model.predict(model.beta, Z0)
 	pi1, _ = model.predict(model.beta, Z1)
 	logRRi = torch.log(pi1) - torch.log(pi0)
@@ -333,8 +333,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	        'converged': converged
 	}
 	torch.save({
-		'model_state': model_state,
-        'config': config
+		'model_state': model_state
         }, os.path.join(output_path, 'checkpoint.pth'))
 
 	model.load_state_dict(curr_best_model_state)
@@ -564,7 +563,9 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.option('--save_hessian', is_flag=True, show_default=True, default=False, type=bool)
 def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_hessian, save_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
-	config = state_dict["config"]
+	with open(os.path.join(checkpoint_path, "config.json"), "r") as f:
+		config = json.load(f)
+
 	if output_path is None:
 		output_path = os.path.join(checkpoint_path, w1 + "_" + w0)
 	create_directory(output_path)

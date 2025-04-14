@@ -33,12 +33,12 @@ class DispersionModel(torch.nn.Module):
             self.covariate_count = Z.shape[1]
             self.beta = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
         
+        self.estimate_sd = estimate_sd
         if estimate_sd:
             # Optimize kappa over real line -- get_sd() will map it to positive line.
-            self.kappa = torch.nn.Parameter(torch.randn(1, dtype=torch.float64), requires_grad=True)
+            self.kappa = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
         else:
-            # Fix kappa = 0.5 (project to real line via inverse softplus).
-            self.kappa = torch.nn.Parameter(softplus_inv(torch.tensor(0.5, dtype=torch.float64)), requires_grad=False)
+            self.kappa = None
 
     def forward(self, pi):
         # log_pi has shape (self.sample_count, self.feature_count)
@@ -57,6 +57,8 @@ class DispersionModel(torch.nn.Module):
         else:
             val3 = torch.mm(self.Z, self.beta.unsqueeze(-1)).expand(-1, self.feature_count)
         log_phi_mean = val0 + val1 + val2 + val3
+        if self.estimate_sd:
+            log_phi_mean += (self.get_sd() ** 2) * 0.5
         return(log_phi_mean)
 
     def log_prior(self):
