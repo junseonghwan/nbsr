@@ -605,7 +605,6 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_he
 			result = so.minimize_scalar(neg_kde, bounds=(x.min(), x.max()), method='bounded')
 			return result.x
 		log2_bias = np.array(list(map(kde_mode, log2RR)))
-		#log2_bias = np.array([0.1754252])
 
 	counts_pd = pd.read_csv(config["counts_path"])
 	samples = counts_pd.columns
