@@ -7,16 +7,14 @@ import click
 import pandas as pd
 import numpy as np
 import scipy
+import scipy.optimize as so
+import scipy.stats as ss
 import torch
 
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.nbsr_dispersion import NBSRTrended
 from nbsr.dispersion import DispersionModel
-from nbsr.nbsr_eb import NBSREmpiricalBayes
-from nbsr.zinbsr import ZINBSR
-from nbsr.grbf import GaussianRBF, evaluate_mean
 from nbsr.utils import *
-from nbsr.distributions import softplus
 
 torch.set_default_dtype(torch.float64)
 torch.set_printoptions(precision=9)
@@ -169,10 +167,11 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 	if col_idx1 is not None:
 		Z1[:,col_idx1+1] = 1
 		found = True
-	print(found)
+	#print(found)
 	pi0, _ = model.predict(model.beta, Z0)
 	pi1, _ = model.predict(model.beta, Z1)
 	logRRi = torch.log(pi1) - torch.log(pi0)
+	log2RRi = torch.log2(pi1) - torch.log2(pi0)
 
 	# The gradient of g_j wrt (k,d) is expressed by 
 	# z_{1,d} (1[j = k] - \pi_{k|w_1}) - z_{0,d} (1[j = k] - \pi_{k|w_0}).
@@ -202,7 +201,8 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 	cov_mat = torch.bmm(torch.bmm(ret, S_batch), ret.transpose(1, 2))
 
 	logFC = logRRi.data.numpy()
-	return (logFC, cov_mat, I)
+	log2FC = log2RRi.data.numpy()
+	return (logFC, log2FC, cov_mat, I)
 
 def fit_posterior(model, optimizer, iterations, tol, lookback_iterations):
 	# Fit the model.
@@ -391,8 +391,9 @@ def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, esti
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
+@click.option('--update_dispersion', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, pivot):
+def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, update_dispersion, pivot):
 
 	# Read in the mean expression.
 	# Optimize NBSREmpiricalBayes to get MLE dispersions.
@@ -442,16 +443,19 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	np.savetxt(os.path.join(data_path, "nbsr_dispersion_sd.csv"), np.array([sd.data.numpy()]), delimiter=',')
 	torch.save(disp_model, os.path.join(data_path, disp_model_path))
 
-	# Fit NBSR parameters.
-	param_list = []
-	for name, param in nbsr_model.named_parameters():
-		if "disp_model" in name:
-			continue
-		param_list.append(param)
+	# Fit NBSR parameters but do not update the dispersion parameters.
+	if update_dispersion:
+		param_list = nbsr_model.named_parameters()
+	else:
+		param_list = []
+		for name, param in nbsr_model.named_parameters():
+			if "disp_model" in name:
+				continue
+			param_list.append(param)
 
 	nbsr_model.specify_beta_prior(lam, shape, scale)
 	optimizer = torch.optim.Adam(param_list,lr=lr)
-	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
+	print("Optimizing NBSR parameters given DESeq2 mean expression levels.")
 	for i in range(iterations):
 		loss = -nbsr_model.log_posterior(nbsr_model.beta)
 		if loss.isnan():
@@ -554,10 +558,11 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.argument('var', type=str)
 @click.argument('w1', type=str) # "level to be used on the numerator"
 @click.argument('w0', type=str) # "level to be used on the denominator"
+@click.option('--absolute_fc', default=False, is_flag=True, type=bool)
 @click.option('--output_path', default=None, type=str)
 @click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--save_hessian', is_flag=True, show_default=True, default=False, type=bool)
-def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_hessian):
+def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_hessian, save_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
 	config = state_dict["config"]
 	if output_path is None:
@@ -576,10 +581,11 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 		I = torch.from_numpy(hessian).double()
 
 	res_beta, I = inference_beta(model, var, w1, w0, config["x_map"], I)
-	logRR, cov_mat, _  = inference_logRR(model, var, w1, w0, config["x_map"], I)
+	res_beta.to_csv(os.path.join(checkpoint_path, "coefficients.csv"), index=False)
+
+	logRR, log2RR, cov_mat, _  = inference_logRR(model, var, w1, w0, config["x_map"], I)
 	logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 
-	res_beta.to_csv(os.path.join(checkpoint_path, "nbsr_results.csv"), index=False)
 	# Save Hessian for future use.
 	if save_hessian:
 		np.savetxt(os.path.join(checkpoint_path, "hessian.csv"), I, delimiter=',')
@@ -587,6 +593,53 @@ def results(checkpoint_path, var, w1, w0, output_path, recompute_hessian, save_h
 	np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
 	# cov_mat is NxKxK tensor. 
 	np.save(os.path.join(output_path, "nbsr_logRR_cov.npy"), cov_mat.data.numpy())
+
+	# Compute the test statistic and the p-values.
+	log2_bias = 0
+	if absolute_fc:
+		# Find the mode of the log2RR.
+		# log2RR is N x P (N: number of samples, P: number of features).
+		def kde_mode(x):
+			kde = ss.gaussian_kde(x)
+			neg_kde = lambda x: -kde(x)
+			result = so.minimize_scalar(neg_kde, bounds=(x.min(), x.max()), method='bounded')
+			return result.x
+		log2_bias = np.array(list(map(kde_mode, log2RR)))
+
+	counts_pd = pd.read_csv(config["counts_path"])
+	samples = counts_pd.columns
+	features = counts_pd.index
+
+	log2RR = (log2RR - log2_bias)
+	log2RR_se = logRR_std / np.log(2)
+	stat = log2RR / log2RR_se
+	pvalue = 2 * ss.norm.cdf(-np.abs(stat))
+	# Fifth column is the adjusted p-value.
+	padj = np.array(list(map(lambda x: ss.false_discovery_control(x, method="bh"), pvalue)))
+	
+	# Output log2RR, se, log2_bias, p-value, adjusted p-value.
+	# If there is sample-level variability, output it using h5 file format.
+	# Otherwise, output it as csv results file.
+	with pd.HDFStore(os.path.join(output_path, "nbsr_results.h5"), mode='w') as store:
+		store['log2RR'] = pd.DataFrame(log2RR.T, index=features, columns=samples)
+		store['se'] = pd.DataFrame(log2RR_se.T, index=features, columns=samples)
+		store['stat'] = pd.DataFrame(stat.T, index=features, columns=samples)
+		store['pvalue'] = pd.DataFrame(pvalue.T, index=features, columns=samples)
+		store['padj'] = pd.DataFrame(padj.T, index=features, columns=samples)
+
+	# If there is only one variable, then we can output it as a table.
+	if np.allclose(log2RR, log2RR[0, :], atol=1e-8):
+		if absolute_fc:
+			print(f"log2bias: {log2_bias[0]}")
+		#Output results table.
+		res = pd.DataFrame({
+			"feature": features,
+			"log2FC": log2RR[0,:],
+			"se": log2RR_se[0,:],
+			"stat": stat[0,:],
+			"pvalue": pvalue[0,:],
+			"padj": padj[0,:]})
+		res.to_csv(os.path.join(checkpoint_path, "nbsr_results.csv"), index=False)
 
 cli.add_command(eb)
 cli.add_command(train)

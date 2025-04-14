@@ -7,9 +7,10 @@ setup(
     install_requires=[
     'torch', 
 	'numpy<2', 
-	'scipy', 
+	'scipy>=1.11', 
 	'pandas',
     'click',
-    "setuptools"
+    "setuptools",
+    'tables'
     ],
 )

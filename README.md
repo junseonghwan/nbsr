@@ -48,13 +48,13 @@ Optional arguments:
 -r: number of optimization runs. Default: 1.
 --lam: scaling parameter of standar deviation on beta. Default: 1.
 --shape: shape parameter for Beta prior distribution on standard deviation on beta. Default: 3.
---shape: shape parameter for Beta prior distribution on standard deviation on beta. Default: 2.
---dispersion_model: flag indicating where log dispersion modeling should be used.
---feature_specific_intercept: flag indicating feature specific intercept is to be used for the log dispersion model.
---grbf: flag indicating Gaussian Radial Basis Function is to be used as a prior on dispersion. 
+--scale: shape parameter for Beta prior distribution on standard deviation on beta. Default: 2.
+---trended_dispersion: use trended median dispersion. Default: False.
 ```
 
-When the number of samples for each experimental condtion `>= 10`, we recommend to try `--dispersion_model` and to enable `--feature_specific_intercept` flag. To use `--grbf` prior on the dispersion parameters when fitting NBSR, we require to first run DESeq2 to obtain mean expression levels for each sample and feature and then to run NBSR with Empirical Bayes. NBSR EB will obtain MLE for dispersion given the mean expression levels followed by fitting GRBF prior on dispersion. To run DESeq2, use `deseq2.R`:
+When the number of samples for each experimental condtion is `>= 10`, we recommend to try `--trended_dispersion`.
+When the number of samples is small, we recommend to first run DESeq2 to obtain mean expression levels for each sample and feature and then to run NBSR with Empirical Bayes. NBSR EB will estimate the dispersion model parameters, which will be used as a prior in estimating the feature-wise dispersion parameters. 
+To run DESeq2, use `deseq2.R`:
 
 ```
 Rscript scripts/deseq2.R /path/to/data var1,var2,var3
