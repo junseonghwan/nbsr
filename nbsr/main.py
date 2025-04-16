@@ -266,7 +266,7 @@ def construct_model(config):
 	else:
 		if dispersion_model_path is not None:
 			print(f"Dispersion prior model is pre-specified. Loading from {dispersion_model_path}")
-			disp_model = torch.load(os.path.join(data_path, dispersion_model_path))
+			disp_model = torch.load(os.path.join(data_path, dispersion_model_path), weights_only=False)
 		if trended:
 			if disp_model is None:
 				print(f"Dispersion trend will be estimated.")
@@ -538,7 +538,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 			shutil.copy2(file_path, os.path.join(data_path, filename))
 
 	# Obtain Hessian matrix.
-	state_dict = torch.load(os.path.join(data_path, checkpoint_filename))
+	state_dict = torch.load(os.path.join(data_path, checkpoint_filename), weights_only=False)
 	model, _,  _ = load_model_from_state_dict(state_dict, config)
 	I = compute_observed_information(model)
 	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
@@ -549,7 +549,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
 def resume(checkpoint_path, iterations, tol, lookback_iterations):
-	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
+	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename), weights_only=False)
 	run(state_dict, iterations, tol, lookback_iterations)
 
 @click.command()
@@ -562,14 +562,9 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--save_hessian', is_flag=True, show_default=True, default=False, type=bool)
 def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_hessian, save_hessian):
-	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename))
+	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename), weights_only=False)
 	with open(os.path.join(checkpoint_path, "config.json"), "r") as f:
 		config = json.load(f)
-
-	if output_path is None:
-		output_path = os.path.join(checkpoint_path, w1 + "_" + w0)
-	create_directory(output_path)
-	print(config["x_map"])
 
 	model, _, _ = load_model_from_state_dict(state_dict, config)
 
@@ -582,6 +577,12 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_he
 		I = torch.from_numpy(hessian).double()
 
 	res_beta, I = inference_beta(model, var, w1, w0, config["x_map"], I)
+
+	if output_path is None:
+		output_path = os.path.join(checkpoint_path, w1 + "_" + w0)
+	create_directory(output_path)
+	#print(config["x_map"])
+
 	res_beta.to_csv(os.path.join(checkpoint_path, "coefficients.csv"), index=False)
 
 	logRR, log2RR, cov_mat, _  = inference_logRR(model, var, w1, w0, config["x_map"], I)
