@@ -334,7 +334,7 @@ def run(state_dict, iterations, tol, lookback_iterations):
 	}
 	torch.save({
 		'model_state': model_state
-        }, os.path.join(output_path, 'checkpoint.pth'))
+        }, os.path.join(output_path, checkpoint_filename))
 
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.beta, model.X)
@@ -597,7 +597,7 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_he
 	np.save(os.path.join(output_path, "nbsr_logRR_cov.npy"), cov_mat.data.numpy())
 
 	# Compute the test statistic and the p-values.
-	log2_bias = 0
+	log_bias = 0
 	if absolute_fc:
 		# Find the mode of the log2RR.
 		# log2RR is N x P (N: number of samples, P: number of features).
@@ -606,42 +606,39 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_he
 			neg_kde = lambda x: -kde(x)
 			result = so.minimize_scalar(neg_kde, bounds=(x.min(), x.max()), method='bounded')
 			return result.x
-		log2_bias = np.array(list(map(kde_mode, log2RR)))
+		log_bias = np.array(list(map(kde_mode, logRR)))
 
 	counts_pd = pd.read_csv(config["counts_path"])
 	samples = counts_pd.columns
 	features = counts_pd.index
 
-	log2RR = (log2RR - log2_bias)
-	log2RR_se = logRR_std / np.log(2)
-	stat = log2RR / log2RR_se
+	logRR = (logRR - log_bias)
+	stat = logRR / logRR_std
 	pvalue = 2 * ss.norm.cdf(-np.abs(stat))
 	# Fifth column is the adjusted p-value.
 	padj = np.array(list(map(lambda x: ss.false_discovery_control(x, method="bh"), pvalue)))
 	
-	# Output log2RR, se, log2_bias, p-value, adjusted p-value.
+	# Output logRR, se, p-value, adjusted p-value.
 	# If there is sample-level variability, output it using h5 file format.
 	# Otherwise, output it as csv results file.
 	with pd.HDFStore(os.path.join(output_path, "nbsr_results.h5"), mode='w') as store:
-		store['log2RR'] = pd.DataFrame(log2RR.T, index=features, columns=samples)
-		store['se'] = pd.DataFrame(log2RR_se.T, index=features, columns=samples)
+		store['logRR'] = pd.DataFrame(logRR.T, index=features, columns=samples)
+		store['se'] = pd.DataFrame(logRR_std.T, index=features, columns=samples)
 		store['stat'] = pd.DataFrame(stat.T, index=features, columns=samples)
 		store['pvalue'] = pd.DataFrame(pvalue.T, index=features, columns=samples)
 		store['padj'] = pd.DataFrame(padj.T, index=features, columns=samples)
+		if absolute_fc:
+			store['log_bias'] = pd.DataFrame(log_bias, index=samples)
 
 	# If there is only one variable, then we can output it as a table.
 	if np.allclose(log2RR, log2RR[0, :], atol=1e-8):
-		if absolute_fc:
-			print(f"log2bias: {log2_bias[0]}")
 		#Output results table.
 		res = pd.DataFrame({
 			"feature": features,
 			"log2FC": log2RR[0,:],
-			"se": log2RR_se[0,:],
-			"stat": stat[0,:],
 			"pvalue": pvalue[0,:],
 			"padj": padj[0,:]})
-		res.to_csv(os.path.join(checkpoint_path, "nbsr_results.csv"), index=False)
+		res.to_csv(os.path.join(output_path, "nbsr_results.csv"), index=False)
 
 cli.add_command(eb)
 cli.add_command(train)
