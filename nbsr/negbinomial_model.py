@@ -1,8 +1,5 @@
 import torch
 
-import numpy as np
-from scipy.stats import invgamma
-
 from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
 
 # This model implements free to vary dispersion parameterization.

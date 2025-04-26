@@ -40,8 +40,8 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 	else:
 		print(f"Not converged")
 		return False	
-	
-def compute_observed_information(model):
+
+def compute_observed_information_torch(model):
 	print("Computing Hessian...")
 	log_post_grad = model.log_posterior_gradient(model.beta)
 	gradient_matrix = torch.zeros(log_post_grad.size(0), model.beta.size(0))
@@ -58,6 +58,17 @@ def compute_observed_information(model):
 		gradient_matrix[k,:] = model.beta.grad
 
 	return -gradient_matrix
+
+def compute_observed_information(model):
+	print("Computing Hessian using Numba...")
+	X = model.X.data.numpy()
+	Y = model.Y.data.numpy()
+	pi = model.predict(model.beta, model.X)[0].data.numpy()
+	phi = model.softplus(model.phi).data.numpy()
+	s = np.sum(Y, axis=1)
+	mu = s[:,None] * pi
+	_, H = log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
+	return -H
 
 def inference_beta(model, var, w1, w0, x_map, I=None):
 	"""
@@ -526,7 +537,6 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 		json_text = json.dumps(config, indent=4)  # `indent` makes the JSON pretty-printed
 		with open(os.path.join(outpath, "config.json"), "w") as file:
 			file.write(json_text)
-
 
 	# Find the best run and copy the results and checkpoint file up to the data_path.
 	best_run = np.argmin(np.array(losses))
