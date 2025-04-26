@@ -204,7 +204,6 @@ class TestNBSRGradients(unittest.TestCase):
         print(hess_realized[0,:])
         self.assertTrue(np.allclose(hess_expected, hess_realized))
 
-
 class TestNBSRTrendedGradients(unittest.TestCase):
 
     def test_log_lik_gradient(self):
