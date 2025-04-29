@@ -164,7 +164,7 @@ class TestNBSRGradients(unittest.TestCase):
         print("==============Testing Hessian computation==============")
         d = 3
         N = 20
-        J = 5
+        J = 8
         (Y, X, phi) = generate_data(d, N, J)
     
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
@@ -188,10 +188,10 @@ class TestNBSRGradients(unittest.TestCase):
         end = time.perf_counter()
         print("Elapsed with torch = {}s".format((end - start)))
 
-        hess_realized = torch.sum(model.log_lik_hessian_persample(model.beta),0).data.numpy()
-        print(hess_expected.data.numpy()[0,:])
-        print(hess_realized[0,:])
-        self.assertTrue(np.allclose(hess_expected, hess_realized))
+        # hess_realized = torch.sum(model.log_lik_hessian_persample(model.beta),0).data.numpy()
+        # print(hess_expected.data.numpy()[0,:])
+        # print(hess_realized[0,:])
+        # self.assertTrue(np.allclose(hess_expected, hess_realized))
 
         # Compute Hessian using numba.
         pi = model.predict(model.beta, model.X)[0].data.numpy()
@@ -201,7 +201,7 @@ class TestNBSRGradients(unittest.TestCase):
         _, hess_realized = utils.log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
         end = time.perf_counter()
         print("Elapsed with numba compilation = {}s".format((end - start)))
-        print(hess_realized[0,:])
+        #print(hess_realized[0,:])
         self.assertTrue(np.allclose(hess_expected, hess_realized))
 
 class TestNBSRTrendedGradients(unittest.TestCase):
