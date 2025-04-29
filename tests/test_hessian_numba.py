@@ -43,7 +43,7 @@ class TestNBSRHessian(unittest.TestCase):
         print("==============Testing Hessian computation==============")
         d = 3
         N = 30
-        J = 10 # Runtime is cubic in J. J=1024 takes about 800 seconds.
+        J = 100 # Runtime is cubic in J. J=1024 takes about 800 seconds.
         (Y, X, phi) = generate_data(d, N, J)
 
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
@@ -71,7 +71,7 @@ class TestNBSRTrendedHessian(unittest.TestCase):
         print("==============Testing NBSRTrended Hessian computation==============")
         d = 3
         N = 30
-        J = 40 # Runtime is cubic in J.
+        J = 200 # Runtime is cubic in J.
         (Y, X, phi) = generate_data(d, N, J)
 
         disp_model = dm.DispersionModel(torch.tensor(Y))

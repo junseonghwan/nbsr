@@ -42,25 +42,27 @@ def hessian_trended(X, Y, pi, p, r, digamma, trigamma, b_1, pivot=True):
                 idx_k = d*dim + k
                 delta_j_k = (1.0 if j == k else 0.0) - pi_i[k]
                 for c_idx in range(JP):
-                    kp, dp = divmod(r_idx, P)
+                    kp, dp = divmod(c_idx, P)
                     idx_kp = dp*dim + kp
                     delta_j_kp = (1.0 if j == kp else 0.0) - pi_i[kp]
                     delta_k_kp = (1.0 if k == kp else 0.0) - pi_i[kp]
 
-                    # This should be optimized -- lots of temp memories allocated.
-                    term1_1 = b_1 * delta_j_k * delta_j_kp
-                    term1_2 = -p_i[j] * (1 + b_1) * delta_j_k * delta_j_kp
-                    term1_3 = pi_i[k] * delta_k_kp
-                    term1 = r_i[j] * (1 - p_i[j]) * (1 + b_1) * x_i[d] * x_i[dp] * (term1_1 + term1_2 + term1_3)
+                    xx = x_i[d] * x_i[dp]
+                    delta_j_k_kp = delta_j_k * delta_j_kp
 
-                    term2_1 = (1 - p_i[j]) * (1 + b_1) * delta_j_k * delta_j_kp
+                    term1_1 = b_1 * delta_j_k_kp
+                    term1_2 = -p_i[j] * (1 + b_1) * delta_j_k_kp
+                    term1_3 = pi_i[k] * delta_k_kp
+                    term1 = r_i[j] * (1 - p_i[j]) * (1 + b_1) * xx * (term1_1 + term1_2 + term1_3)
+
+                    term2_1 = (1 - p_i[j]) * (1 + b_1) * delta_j_k_kp
                     term2_2 = pi_i[k] * delta_k_kp
-                    term2 = -y_i[j] * p_i[j] * (1 + b_1) * x_i[d]*x_i[dp] * (term2_1 + term2_2)
+                    term2 = -y_i[j] * p_i[j] * (1 + b_1) * xx * (term2_1 + term2_2)
                     
-                    term3_1 = a_i[j] * b_1 * delta_j_k * delta_j_kp
-                    term3_2 = (r_i[j] * b_1 * c_i[j] + (1 - p_i[j]) * (1 + b_1)) * delta_j_k * delta_j_kp
+                    term3_1 = a_i[j] * b_1 * delta_j_k_kp
+                    term3_2 = (r_i[j] * b_1 * c_i[j] + (1 - p_i[j]) * (1 + b_1)) * delta_j_k_kp
                     term3_3 = a_i[j] * pi_i[k] * delta_k_kp
-                    term3 = r_i[j] * b_1 * x_i[d]*x_i[dp] * (term3_1 + term3_2 + term3_3)
+                    term3 = r_i[j] * b_1 * xx * (term3_1 + term3_2 + term3_3)
 
                     H[idx_k, idx_kp] += (term1 + term2 + term3)
 
