@@ -1,6 +1,7 @@
 import torch
 
 from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
+from nbsr.utils import hessian_nbsr
 
 # This model implements free to vary dispersion parameterization.
 class NegativeBinomialRegressionModel(torch.nn.Module):
@@ -277,6 +278,22 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             hessian[idx,:,:] = torch.sum(C1_ + C2_, 0)
         return hessian
 
+    def log_likelihood_hessian(self, beta):
+        pi = self.predict(beta, self.X)[0].detach()
+        phi = self.softplus(self.phi.detach())
+        mu = self.s[:,None] * pi
+        return hessian_nbsr(self.X.numpy(), 
+                            self.Y.numpy(), 
+                            pi.numpy(), 
+                            mu.numpy(), 
+                            phi.numpy(), 
+                            self.pivot)
+
     def log_posterior_hessian(self, beta):
         sd = self.softplus(self.psi).repeat(self.dim)
-        return torch.sum(self.log_lik_hessian_persample(beta), 0) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+        return self.log_likelihood_hessian(beta) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+
+    # def log_posterior_hessian(self, beta):
+    #     sd = self.softplus(self.psi).repeat(self.dim)
+    #     return torch.sum(self.log_lik_hessian_persample(beta), 0) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+

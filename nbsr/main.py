@@ -2,6 +2,7 @@ import os
 import copy
 import shutil
 import json
+import time
 
 import click
 import pandas as pd
@@ -42,7 +43,7 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 		return False	
 
 def compute_observed_information_torch(model):
-	print("Computing Hessian...")
+	print("Computing Hessian using torch...")
 	log_post_grad = model.log_posterior_gradient(model.beta)
 	gradient_matrix = torch.zeros(log_post_grad.size(0), model.beta.size(0))
 	# Compute the gradient for each component of log_post_grad w.r.t. beta
@@ -59,18 +60,19 @@ def compute_observed_information_torch(model):
 
 	return -gradient_matrix
 
-def compute_observed_information(model):
+def compute_observed_information_numba(model):
 	print("Computing Hessian using Numba...")
-	X = model.X.data.numpy()
-	Y = model.Y.data.numpy()
-	pi = model.predict(model.beta, model.X)[0].data.numpy()
-	phi = model.softplus(model.phi).data.numpy()
-	s = np.sum(Y, axis=1)
-	mu = s[:,None] * pi
-	_, H = log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
+	H = model.log_likelihood_hessian(model.beta)
 	return -H
 
-def inference_beta(model, var, w1, w0, x_map, I=None):
+def compute_observed_information(model, numba=False):
+	start = time.perf_counter()
+	I = compute_observed_information_numba(model) if numba else compute_observed_information_torch(model)	
+	end = time.perf_counter()
+	print("Hessian computation with numba = {}s".format((end - start)))
+	return I
+
+def inference_beta(model, var, w1, w0, x_map, I):
 	"""
 	Compute inference statistics for contrasting two levels for a given variable of interest.
 	Note: w0 corresponds to the denominator in the log ratio while w1 corresponds to the numerator.
@@ -103,8 +105,8 @@ def inference_beta(model, var, w1, w0, x_map, I=None):
 	# Compute observed information matrix.
 	# Compute (pseudo) inverse of observed Fisher information matrix to get covariance matrix.
 	# Compute standard errors.
-	if I is None:
-		I = compute_observed_information(model)
+	assert I is not None
+
 	S = torch.linalg.pinv(I)
 
 	std_err_reshaped = reshape(model, torch.sqrt(torch.diag(S))).data.numpy()
@@ -150,7 +152,7 @@ def inference_beta(model, var, w1, w0, x_map, I=None):
 	res["pvalue"] = 2 * scipy.stats.norm.cdf(-np.abs(res["stat"]))
 	# Sixth column is the Benjamini-Hochberg adjusted p-value.
 	#res["adjPValue"] = false_discovery_control(res["pvalue"], method="bh")
-	return (res, I)
+	return res
 
 def inference_logRR(model, var, w1, w0, x_map, I = None):
 	if I is None:
@@ -516,9 +518,10 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 @click.option('--trended_dispersion', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--numba', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--tol', default=0.01, type=float)
 @click.option('--lookback_iterations', default=50, type=int)
-def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, pivot, tol, lookback_iterations):
+def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, pivot, numba, tol, lookback_iterations):
 
 	losses = []
 	for run_no in range(runs):
@@ -550,7 +553,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 	# Obtain Hessian matrix.
 	state_dict = torch.load(os.path.join(data_path, checkpoint_filename), weights_only=False)
 	model, _,  _ = load_model_from_state_dict(state_dict, config)
-	I = compute_observed_information(model)
+	I = compute_observed_information(model, numba)
 	np.savetxt(os.path.join(data_path, "hessian.csv"), I, delimiter=',')
 
 @click.command()
@@ -570,8 +573,9 @@ def resume(checkpoint_path, iterations, tol, lookback_iterations):
 @click.option('--absolute_fc', default=False, is_flag=True, type=bool)
 @click.option('--output_path', default=None, type=str)
 @click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
+@click.option('--numba', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--save_hessian', is_flag=True, show_default=True, default=False, type=bool)
-def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_hessian, save_hessian):
+def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_hessian, numba, save_hessian):
 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename), weights_only=False)
 	with open(os.path.join(checkpoint_path, "config.json"), "r") as f:
 		config = json.load(f)
@@ -585,8 +589,13 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_he
 	if not recompute_hessian and os.path.exists(os.path.join(checkpoint_path, "hessian.csv")):
 		hessian = np.loadtxt(os.path.join(checkpoint_path, "hessian.csv"), delimiter=',')
 		I = torch.from_numpy(hessian).double()
+	else:
+		I = compute_observed_information(model, numba)
+		if numba:
+			I = torch.from_numpy(I).double()
 
-	res_beta, I = inference_beta(model, var, w1, w0, config["x_map"], I)
+	#import pdb; pdb.set_trace()
+	res_beta = inference_beta(model, var, w1, w0, config["x_map"], I)
 
 	if output_path is None:
 		output_path = os.path.join(checkpoint_path, w1 + "_" + w0)

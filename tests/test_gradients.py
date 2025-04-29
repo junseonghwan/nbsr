@@ -66,7 +66,7 @@ class TestNBSRGradients(unittest.TestCase):
         s = np.sum(model.Y.data.numpy(), 1)
         mu = s[:,None] * pi
         start = time.perf_counter()
-        grad_actual, _ = utils.log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
+        grad_actual, _ = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
         end = time.perf_counter()
         print("Elapsed with numba compilation = {}s".format((end - start)))
         print(grad_actual)
@@ -74,7 +74,7 @@ class TestNBSRGradients(unittest.TestCase):
 
         # Timing should improve on the second call as compiled code will be called.
         start = time.perf_counter()
-        grad_actual, _ = utils.log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
+        grad_actual, _ = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
         end = time.perf_counter()
         print("Elapsed with post compilation = {}s".format((end - start)))
         print(grad_actual)
@@ -106,7 +106,7 @@ class TestNBSRGradients(unittest.TestCase):
         s = np.sum(model.Y.data.numpy(), 1)
         mu = s[:,None] * pi
         start = time.perf_counter()
-        grad_actual, _ = utils.log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
+        grad_actual, _ = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
         end = time.perf_counter()
         print("Elapsed with numba compilation = {}s".format((end - start)))
         print(grad_actual)
@@ -198,7 +198,7 @@ class TestNBSRGradients(unittest.TestCase):
         s = np.sum(model.Y.data.numpy(), 1)
         mu = s[:,None] * pi
         start = time.perf_counter()
-        _, hess_realized = utils.log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
+        _, hess_realized = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
         end = time.perf_counter()
         print("Elapsed with numba compilation = {}s".format((end - start)))
         #print(hess_realized[0,:])

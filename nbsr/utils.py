@@ -8,14 +8,14 @@ import os
 import sys
 
 @njit(cache=True) 
-def hessian_trended(X, Y, pi, p, r, digamma, trigamma, b_1, pivot=True):
+def hessian_trended_nbsr(X, Y, pi, p, r, aa, cc, b_1, pivot=True):
     N, P = X.shape
     J    = Y.shape[1]
     dim = J - 1 if pivot else J
     JP   = dim * P
 
     # allocate outputs
-    g = np.zeros(JP, dtype=np.float64)
+    #g = np.zeros(JP, dtype=np.float64)
     H = np.zeros((JP, JP), dtype=np.float64)
 
     # loop #1: over samples i
@@ -25,8 +25,8 @@ def hessian_trended(X, Y, pi, p, r, digamma, trigamma, b_1, pivot=True):
         pi_i = pi[i]    # (J,)
         p_i = p[i]
         r_i = r[i]
-        a_i = digamma[i]
-        c_i = trigamma[i]
+        a_i = aa[i]
+        c_i = cc[i]
 
         # accumulate gradient
         # w1 = r_i * (1 - p_i) * (1 + b_1)
@@ -130,14 +130,14 @@ def log_lik_gradients2(X, Y, pi, mu, phi, pivot=True):
     return (g, H)
 
 @njit(cache=True) 
-def log_lik_gradients(X, Y, pi, mu, phi, pivot=True):
+def hessian_nbsr(X, Y, pi, mu, phi, pivot=True):
     N, P = X.shape
     J    = Y.shape[1]
     dim = J - 1 if pivot else J
     JP   = dim * P
 
     # allocate outputs
-    g = np.zeros(JP, dtype=np.float64)
+    #g = np.zeros(JP, dtype=np.float64)
     H = np.zeros((JP, JP), dtype=np.float64)
 
     # reciprocal dispersions
@@ -165,7 +165,7 @@ def log_lik_gradients(X, Y, pi, mu, phi, pivot=True):
                 ind_j_k = 1.0 if j == k else 0.0
                 for d in range(P):
                     idx_k = d * dim + k
-                    g[idx_k] += -grad_w[j] * x_i[d] * (ind_j_k - pi_ik)
+                    #g[idx_k] += -grad_w[j] * x_i[d] * (ind_j_k - pi_ik)
                     for kp in range(dim):
                         pi_ikp = pi_i[kp]
                         ind_k_kp = 1.0 if k == kp else 0.0
@@ -175,7 +175,7 @@ def log_lik_gradients(X, Y, pi, mu, phi, pivot=True):
                             term1 = grad_w[j] * x_i[d] * x_i[dp] * pi_ik * (ind_k_kp - pi_ikp)
                             term2 = hess_w[j] * x_i[d] * x_i[dp] * (ind_j_k - pi_ik) * (ind_j_kp - pi_ikp)
                             H[idx_k, idx_kp] += (term1 - term2)
-    return(g, H)
+    return H
 
 def construct_tensor_from_coldata(coldata_pd, column_names, sample_count, include_intercept=True):
     X_intercept = torch.ones(sample_count, 1)

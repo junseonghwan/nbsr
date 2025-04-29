@@ -1,15 +1,11 @@
 import torch
 
-import os
-import math
 import numpy as np
-import pandas as pd
-from scipy.stats import invgamma
-import time
+from scipy.special import digamma, polygamma
 
-from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv, softplus
+from nbsr.distributions import log_negbinomial, log_invgamma
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
-from nbsr.dispersion import DispersionModel
+from nbsr.utils import hessian_trended_nbsr
 
 # This model extends the basic NBSR model with trended dispersion given by disp_model.forward(pi).
 class NBSRTrended(NegativeBinomialRegressionModel):
@@ -108,3 +104,30 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         
         log_lik_grad = self.log_lik_gradient_persample(beta).sum(0)
         return log_lik_grad + log_prior_grad
+
+    def log_likelihood_hessian(self, beta):
+        pi = self.predict(beta, self.X)[0].detach()
+        phi = torch.exp(self.disp_model.forward(pi))
+        mu = self.s[:,None] * pi
+        var = mu + phi * (mu ** 2)
+        r = 1.0 / phi
+        p = mu / var
+
+        b1 = self.disp_model.b1[0].detach()
+        aa = digamma(self.Y + r) - digamma(r) + torch.log(p)
+        r_np = r.numpy()
+        cc = polygamma(1, self.Y.numpy() + r_np) - polygamma(1, r_np)
+
+        return hessian_trended_nbsr(self.X.numpy(), 
+                                    self.Y.numpy(), 
+                                    pi.numpy(), 
+                                    p.numpy(),
+                                    r.numpy(),
+                                    aa.numpy(), 
+                                    cc.numpy(), 
+                                    b1.numpy(),
+                                    self.pivot)
+
+    def log_posterior_hessian(self, beta):
+        sd = self.softplus(self.psi).repeat(self.dim)
+        return self.log_likelihood_hessian(beta) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)

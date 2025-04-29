@@ -53,7 +53,7 @@ class TestNBSRHessian(unittest.TestCase):
         s = np.sum(model.Y.data.numpy(), 1)
         mu = s[:,None] * pi
         start = time.perf_counter()
-        grad1, hess1 = utils.log_lik_gradients(X, Y, pi, mu, phi, model.pivot)
+        grad1, hess1 = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
         end = time.perf_counter()
         print("Elapsed with numba1 = {}s".format((end - start)))
         
@@ -101,7 +101,7 @@ class TestNBSRTrendedHessian(unittest.TestCase):
         r_np = r.detach().numpy()
         trigamma = polygamma(1, model.Y.data.numpy() + r_np) - polygamma(1, r_np)
         start = time.perf_counter()
-        hess_realized = utils.hessian_trended(X, Y, pi.numpy(), p.numpy(), r.numpy(), a.numpy(), trigamma, b1[0], model.pivot)
+        hess_realized = utils.hessian_trended_nbsr(X, Y, pi.numpy(), p.numpy(), r.numpy(), a.numpy(), trigamma, b1[0], model.pivot)
         end = time.perf_counter()
         print("Elapsed with numba = {}s".format((end - start)))
         #print(grad_realized)
