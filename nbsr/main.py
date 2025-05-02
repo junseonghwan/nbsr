@@ -180,6 +180,7 @@ def inference_logRR(model, var, w1, w0, x_map, I = None):
 	if col_idx1 is not None:
 		Z1[:,col_idx1+1] = 1
 		found = True
+	assert found == True
 	print(f"Found covariate {var} in the model.")
 	pi0, _ = model.predict(model.beta, Z0)
 	pi1, _ = model.predict(model.beta, Z1)
@@ -507,7 +508,6 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
 @click.argument('vars', nargs=-1)
-@click.option('-d', '--dispersion_model_file', default=None, type=str)
 @click.option('-i', '--iterations', default=10000, type=int)
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('-r', '--runs', default=1, type= int, help="Number of optimization runs (initialization).")
@@ -515,6 +515,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
+@click.option('--dispersion_model_file', default=None, type=str)
 @click.option('--trended_dispersion', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
@@ -584,8 +585,8 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, output_path, recompute_he
 
 	# Check if hessian matrix exists.
 	# Load it and set it as the observed information matrix on model.
-	#import pdb; pdb.set_trace()
 	I = None
+	# Hessian to be saved using h5 file format for efficiency.
 	if not recompute_hessian and os.path.exists(os.path.join(checkpoint_path, "hessian.csv")):
 		hessian = np.loadtxt(os.path.join(checkpoint_path, "hessian.csv"), delimiter=',')
 		I = torch.from_numpy(hessian).double()
