@@ -227,6 +227,8 @@ def torch_rbf(x, a, b, c):
     return result
 
 def read_file_if_exists(file_path):
+    if file_path is None:
+        return None
     if os.path.exists(file_path):
         return np.loadtxt(file_path)
     return None
