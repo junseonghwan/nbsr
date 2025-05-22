@@ -19,7 +19,7 @@ class NBSRConfig():
     estimate_dispersion_sd: bool = False
     trended_dispersion:     bool = False
     dispersion_path:        Path | None = None
-    dispersion_model_path:  Path | None = None
+    dispersion_model_file:  str | None = None # we will look for output_path / dispersion_model_file
     pivot:  bool = False
     use_cuda_if_available: bool = True
 
@@ -35,6 +35,6 @@ class NBSRConfig():
         data["coldata_path"] = Path(data["coldata_path"])
         if data.get("dispersion_path") is not None:
             data["dispersion_path"] = Path(data["dispersion_path"])
-        if data.get("dispersion_model_path") is not None:
-            data["dispersion_model_path"] = Path(data["dispersion_model_path"])
+        # if data.get("dispersion_model_path") is not None:
+        #     data["dispersion_model_path"] = Path(data["dispersion_model_path"])
         return cls(**data)

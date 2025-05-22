@@ -18,12 +18,6 @@ class DispersionModel(torch.nn.Module):
         self.register_buffer("R", R)
         self.register_buffer("log_R", log_R)
 
-        # self.Y = Y
-        # self.Z = Z # NxP design matrix for covariates to use in modeling the dispersion.
-
-        # self.R = Y.sum(1)
-        # self.log_R = torch.log(self.R)
-
         # Formulate design matrix: dimension is N x K x (P+3).
         # For each sample i=1,...,N, the KxP matrix contains 
         # a column of 1's (intercept_j), 
