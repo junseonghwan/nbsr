@@ -77,7 +77,7 @@ def compute_observed_information(model, use_cuda_if_available=True):
 	start = time.perf_counter()
 	I = compute_observed_information_torch(model, use_cuda_if_available)
 	end = time.perf_counter()
-	print("Hessian computation with numba = {}s".format((end - start)))
+	print("Hessian computation time = {}s".format((end - start)))
 	return I
 
 def inference_beta(model, var, w1, w0, x_map, I):

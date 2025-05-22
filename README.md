@@ -32,7 +32,11 @@ or
 pytest tests/
 ```
 
-## Execution
+## Analysis
+
+To analyze individual dataset using Jupyter-lab, refer to `demo.ipynb`.
+
+## Batch execution to replicate simulation results
 
 The required arguments are (1) path to directory containing `X.csv` and `Y.csv` and (2) a list of explanatory variable names (covariates) separated by space matching the column names in `X.csv`.
 
@@ -50,6 +54,7 @@ Optional arguments:
 --shape: shape parameter for Beta prior distribution on standard deviation on beta. Default: 3.
 --scale: shape parameter for Beta prior distribution on standard deviation on beta. Default: 2.
 ---trended_dispersion: use trended median dispersion. Default: False.
+---estimate_dispersion_sd: use trended mean dispersion if flag is on. Default: False.
 ```
 
 When the number of samples for each experimental condtion is `>= 10`, we recommend to try `--trended_dispersion`.
@@ -70,27 +75,6 @@ python nbsr/main.py eb /path/to/data var1 var2 var3
 
 with optional arguments:
 
-```
---nbsr_iter: The number of iterations to use for obtaining the maximum likelihood estimates for the dipsersion parameter given the DESeq2 mean expression levels. Default: 5,000.
---nbsr_lr: The learning rate for obtaining the maximum likelihood estimates for the dipsersion parameter. Default: 0.05.
---grbf_iter: The number of iterations for optimizing GRBF model parameters. Default: 5,000.
---grbf_lr: The learning rate for optimizing GRBF model parameters. Default: 0.05.
---knot_count: The number of centers or knots for GRBF. Default: 10.
---grbf_sd: The scale parameter for the GRBF kernel. Default: 0.5.
-```
-
-Finally, we can fit NBSR with the prior on dispersion specified using GRBF by setting the `--grbf` flag: 
-
-```
-python nbsr/main.py train /path/to/data var1 var2 var3 --grbf
-```
-
-Note that if `--dispersion_model` flag is set, then `--grbf` flag will be ignored. 
-
-Refer to script `run_nbsr_eb.sh`, which streamlines the process of running NBSR with GRBF dispersion prior.
-
-Running NBSR's `train` will generate a checkpoint file in the same path where the data resides (i.e., `/path/to/data`).
-
 Finally, to perform inference to compare two experimental conditions say on `var1` with `level1` (numerator) and `level2` (denominator):
 
 ```
@@ -106,7 +90,7 @@ A test dataset can be found in `data/test`. This dataset contains one covariate 
 We will run NBSR on the test data via command:
 
 ```
-python nbsr/main.py train data/test/ trt -i 20000 --dispersion_model --feature_specific_intercept
+python nbsr/main.py train data/test/ trt -i 10000 --dispersion_model --feature_specific_intercept
 ```
 
 Then, to compare two treatment levels with `alt` in the numerator:
