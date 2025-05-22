@@ -398,7 +398,7 @@ def run(config):
 	return(curr_loss_history, model)
 
 def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False):
-	
+	results_path = Path(results_path)
 	config = NBSRConfig.load_json(results_path / "config.json")
 	state_dict = torch.load(results_path / checkpoint_filename, weights_only=False)
 	x_map = state_dict["x_map"]
@@ -611,7 +611,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 	data_path = Path(data_path)
 	losses = []
 	for run_no in range(runs):
-		outpath = data_path / "run" + str(run_no)
+		outpath = data_path / ("run" + str(run_no))
 		config = NBSRConfig(counts_path=data_path / "Y.csv",
 					  		coldata_path=data_path / "X.csv",
 							output_path=outpath,
@@ -626,12 +626,12 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 							trended_dispersion=trended_dispersion,
 							dispersion_model_path=dispersion_model_file,
 							pivot=pivot)
-		loss = run(config)
-		losses.append(loss)
+		loss_history, _ = run(config)
+		losses.append(np.min(loss_history)) # store the best (minimal) loss.
 
 	# Find the best run and copy all the output files to data_path.
 	best_run = np.argmin(np.array(losses))
-	best_run_path = data_path / "run" + str(best_run)
+	best_run_path = data_path / ("run" + str(best_run))
 	for filename in os.listdir(best_run_path):
 		file_path = best_run_path / filename
 		if os.path.isfile(file_path):
