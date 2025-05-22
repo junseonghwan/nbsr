@@ -11,7 +11,6 @@ setup(
 	'pandas',
     'click',
     'setuptools',
-    'tables',
-    'numba'
+    'tables'
     ],
 )

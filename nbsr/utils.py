@@ -2,12 +2,12 @@ import numpy as np
 import torch
 from scipy.special import logsumexp
 import pandas as pd
-from numba import njit
+#from numba import njit
 
 import os
 import sys
 
-@njit(cache=True) 
+# @njit(cache=True) 
 def hessian_trended_nbsr(X, Y, pi, p, r, aa, cc, b_1, pivot=True):
     N, P = X.shape
     J    = Y.shape[1]
@@ -68,7 +68,7 @@ def hessian_trended_nbsr(X, Y, pi, p, r, aa, cc, b_1, pivot=True):
 
     return H
 
-@njit(cache=True) 
+# @njit(cache=True) 
 def log_lik_gradients2(X, Y, pi, mu, phi, pivot=True):
     N, P = X.shape
     J    = Y.shape[1]
@@ -129,7 +129,7 @@ def log_lik_gradients2(X, Y, pi, mu, phi, pivot=True):
                 H[idx_k, idx_kp] += (t1 - t2) * x_i[d] * x_i[dp]
     return (g, H)
 
-@njit(cache=True) 
+# @njit(cache=True) 
 def hessian_nbsr(X, Y, pi, mu, phi, pivot=True):
     N, P = X.shape
     J    = Y.shape[1]

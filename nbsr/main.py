@@ -68,10 +68,12 @@ def compute_observed_information_torch(model, use_cuda_if_available=True):
 
 	return -gradient_matrix
 
-def compute_observed_information_numba(model):
-	print("Computing Hessian using Numba...")
-	H = model.log_likelihood_hessian(model.beta)
-	return -H
+# TODO: MARKED FOR REMOVAL.
+# Numba related.
+# def compute_observed_information_numba(model):
+# 	print("Computing Hessian using Numba...")
+# 	H = model.log_likelihood_hessian(model.beta)
+# 	return -H
 
 def compute_observed_information(model, use_cuda_if_available=True):
 	start = time.perf_counter()
