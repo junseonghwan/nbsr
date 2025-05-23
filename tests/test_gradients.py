@@ -1,12 +1,16 @@
 import unittest
+import time
 
 import numpy as np
-import pandas as pd
 import torch
 
 import nbsr.negbinomial_model as nbm
 import nbsr.nbsr_dispersion as nbsrd
 import nbsr.dispersion as dm
+import nbsr.utils as utils
+
+def setup_module(module):
+    print("Testing gradients and Hessian computation.")
 
 def generate_data(d, N, J):
     # Generate data for testing.
@@ -41,22 +45,47 @@ class TestNBSRGradients(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
     
-        print(Y.shape)
-        print(X.shape)
+        print("==============Test gradient of log likelihood with no pivot==============")
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
+                                                    lam=1., shape=3., scale=2.,
+                                                    dispersion = phi, pivot=False)
         z = model.log_likelihood(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
         grad_expected = model.beta.grad.data.numpy()
-        grad_actual = model.log_lik_gradient(model.beta, tensorized=False).data.numpy()
-        self.assertTrue(np.allclose(grad_expected, grad_actual))
+        start = time.perf_counter()
+        grad_actual = model.log_lik_gradient(model.beta).data.numpy()
+        end = time.perf_counter()
+        print("Elapsed with numpy = {}s".format((end - start)))
         print(grad_expected)
         print(grad_actual)
+        self.assertTrue(np.allclose(grad_expected, grad_actual))
+        
+        # TODO: MARKED FOR REMOVAL.
+        # Numba related computation -- not using numba.
+        # pi = model.predict(model.beta, model.X)[0].data.numpy()
+        # s = np.sum(model.Y.data.numpy(), 1)
+        # mu = s[:,None] * pi
+        # start = time.perf_counter()
+        # grad_actual, _ = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
+        # end = time.perf_counter()
+        # print("Elapsed with numba compilation = {}s".format((end - start)))
+        # print(grad_actual)
+        # self.assertTrue(np.allclose(grad_expected, grad_actual))
+
+        # # Timing should improve on the second call as compiled code will be called.
+        # start = time.perf_counter()
+        # grad_actual, _ = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
+        # end = time.perf_counter()
+        # print("Elapsed with post compilation = {}s".format((end - start)))
+        # print(grad_actual)
+        # self.assertTrue(np.allclose(grad_expected, grad_actual))
 
     def test_log_lik_gradient_pivot(self):
+        print("==============Test gradient of log likelihood with pivot==============")
         d = 3
         N = 20
         J = 5
@@ -66,31 +95,30 @@ class TestNBSRGradients(unittest.TestCase):
         print(X.shape)
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=True)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
+                                                    lam=1., shape=3., scale=2.,
+                                                    dispersion = phi, pivot=True)
         z = model.log_likelihood(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
         grad_expected = model.beta.grad.data.numpy()
-        grad_actual = model.log_lik_gradient(model.beta, tensorized=False).data.numpy()
+        grad_actual = model.log_lik_gradient(model.beta).data.numpy()
         print(grad_expected)
         print(grad_actual)
         self.assertTrue(np.allclose(grad_expected, grad_actual))
 
-    # def test_log_lik_gradient_tensorized(self):
-    #     d = 3
-    #     N = 20
-    #     J = 5
-    #     (Y, X, phi) = generate_data(d, N, J)
-    
-    #     #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
-    #     #X_df = pd.DataFrame(X)
-    #     model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
-    #     grad_expected = model.log_lik_gradient(model.beta, tensorized=False).data.numpy()
-    #     grad_actual = model.log_lik_gradient(model.beta, tensorized=True).data.numpy()
-    #     print(grad_expected)
-    #     print(grad_actual) 
-    #     self.assertTrue(np.allclose(grad_expected, grad_actual))
+        # TODO: MARKED FOR REMOVAL.
+        # Numba related stuff.
+        # pi = model.predict(model.beta, model.X)[0].data.numpy()
+        # s = np.sum(model.Y.data.numpy(), 1)
+        # mu = s[:,None] * pi
+        # start = time.perf_counter()
+        # grad_actual, _ = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
+        # end = time.perf_counter()
+        # print("Elapsed with numba compilation = {}s".format((end - start)))
+        # print(grad_actual)
+        # self.assertTrue(np.allclose(grad_expected, grad_actual))
 
     def test_log_beta_prior_gradient(self):
         d = 3
@@ -98,11 +126,12 @@ class TestNBSRGradients(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
 
-        print("Test gradient of log prior over beta...")
+        print("==============Test gradient of log prior over beta==============")
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
-        model.specify_beta_prior(1, 3, 2)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
+                                                    lam=1., shape=3., scale=2.,
+                                                    dispersion = phi, pivot=False)
         z = model.log_beta_prior(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
@@ -114,22 +143,23 @@ class TestNBSRGradients(unittest.TestCase):
         self.assertTrue(np.allclose(grad_expected, grad_actual))
 
     def test_log_posterior_gradient(self):
+        print("==============Test log posterior gradient==============")
         d = 3
         N = 20
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
 
-        print("Test log posterior gradient")
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
-        model.specify_beta_prior(1, 3, 2)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
+                                                    lam=1., shape=3., scale=2.,
+                                                    dispersion = phi, pivot=False)
         z = model.log_posterior(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
         grad_expected = model.beta.grad.data.numpy()
-        grad_actual = model.log_posterior_gradient(model.beta, tensorized=False).data.numpy()
+        grad_actual = model.log_posterior_gradient(model.beta).data.numpy()
 
         # log_lik_grad = model.log_lik_gradient(model.beta)
         # log_prior_grad = model.log_beta_prior_gradient(model.beta)
@@ -141,17 +171,21 @@ class TestNBSRGradients(unittest.TestCase):
         self.assertTrue(np.allclose(grad_expected, grad_actual))
 
     def test_log_lik_hessian(self):
+        print("==============Testing Hessian computation==============")
         d = 3
         N = 20
-        J = 5
+        J = 8
         (Y, X, phi) = generate_data(d, N, J)
     
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), dispersion = phi, pivot=False)
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
+                                                    lam=1., shape=3., scale=2.,
+                                                    dispersion = phi, pivot=False)
 
         log_lik_grad = model.log_lik_gradient(model.beta)
         hess_expected = torch.zeros(log_lik_grad.size(0), model.beta.size(0))
+        start = time.perf_counter()
         # Compute the gradient for each component of y w.r.t. beta
         for k in range(log_lik_grad.size(0)):
             # Zero previous gradient
@@ -163,11 +197,23 @@ class TestNBSRGradients(unittest.TestCase):
 
             # Store the gradient
             hess_expected[k,:] = model.beta.grad
+        end = time.perf_counter()
+        print("Elapsed with torch = {}s".format((end - start)))
 
-        hess_realized = torch.sum(model.log_lik_hessian_persample(model.beta),0).data.numpy()
-        #print(hess_expected)
-        #print(hess_realized)
-        print("Testing Hessian computation...")
+        # hess_realized = torch.sum(model.log_lik_hessian_persample(model.beta),0).data.numpy()
+        # print(hess_expected.data.numpy()[0,:])
+        # print(hess_realized[0,:])
+        # self.assertTrue(np.allclose(hess_expected, hess_realized))
+
+        # Compute Hessian using numba.
+        pi = model.predict(model.beta, model.X)[0].data.numpy()
+        s = np.sum(model.Y.data.numpy(), 1)
+        mu = s[:,None] * pi
+        start = time.perf_counter()
+        hess_realized = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
+        end = time.perf_counter()
+        print("Elapsed with numba compilation = {}s".format((end - start)))
+        #print(hess_realized[0,:])
         self.assertTrue(np.allclose(hess_expected, hess_realized))
 
 class TestNBSRTrendedGradients(unittest.TestCase):
@@ -180,7 +226,7 @@ class TestNBSRTrendedGradients(unittest.TestCase):
     
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model)
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, lam=1., shape=3., scale=2.)
         z = model.log_likelihood2(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
@@ -199,7 +245,7 @@ class TestNBSRTrendedGradients(unittest.TestCase):
     
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, pivot=True)
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, lam=1., shape=3., scale=2., pivot=True)
         z = model.log_likelihood2(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
@@ -218,8 +264,7 @@ class TestNBSRTrendedGradients(unittest.TestCase):
     
         tensorY = torch.tensor(Y)
         disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model)
-        model.specify_beta_prior(1, 3, 2)
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, lam=1., shape=3., scale=2.)
         z = model.log_posterior(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()

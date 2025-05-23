@@ -1,19 +1,22 @@
 import torch
 
-import numpy as np
-from scipy.stats import invgamma
-
 from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
+from nbsr.utils import hessian_nbsr
 
 # This model implements free to vary dispersion parameterization.
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
-    def __init__(self, X, Y, dispersion_prior=None, dispersion=None, prior_sd=None, pivot=False):
+    def __init__(self, X, Y, lam, shape, scale, dispersion_prior=None, dispersion=None, pivot=False):
         super().__init__()
         assert(isinstance(X, torch.Tensor))
         assert(isinstance(Y, torch.Tensor))
-        self.X = X
-        self.Y = Y
+        # Place X, Y on buffer so that they can be moved to GPU.
+        self.register_buffer("X", X)
+        self.register_buffer("Y", Y)
+        self.register_buffer("lam", torch.tensor(lam, dtype=torch.float64))
+        self.register_buffer("beta_var_shape", torch.tensor(shape, dtype=torch.float64))
+        self.register_buffer("beta_var_scale", torch.tensor(scale, dtype=torch.float64))
+        
         self.s = torch.sum(self.Y, dim=1)  # Summing over rows
         self.pivot = pivot
         self.softplus = torch.nn.Softplus()
@@ -22,7 +25,6 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         self.covariate_count = self.X.shape[1]
         self.rna_count = self.Y.shape[1]
         self.converged = False
-        self.hessian = None
         #self.X = torch.cat([torch.ones(self.sample_count, 1), self.XX], dim = 1)
         print("RNA count:", self.rna_count)
         print("Sample count:", self.sample_count)
@@ -37,23 +39,17 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
             self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
-        if prior_sd is None:
-            #self.psi = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
-            self.psi = torch.nn.Parameter(softplus_inv(torch.ones(self.covariate_count, dtype=torch.float64)), requires_grad=True)
-        else:
-            self.psi = softplus_inv(torch.tensor(prior_sd))
+        self.psi = torch.nn.Parameter(softplus_inv(torch.ones(self.covariate_count, dtype=torch.float64)), requires_grad=True)
 
-    def specify_beta_prior(self, lam, beta_var_shape, beta_var_scale):
-        self.lam = torch.tensor(lam, requires_grad=False)
-        self.beta_var_shape = torch.tensor(beta_var_shape, requires_grad=False)
-        self.beta_var_scale = torch.tensor(beta_var_scale, requires_grad=False)
-        # Sample from prior to initialize standard deviation.
-        #sd = np.sqrt(invgamma.rvs(a=self.beta_var_shape, scale=self.beta_var_scale, size=self.covariate_count))
-        #print("Initial sd:", sd)
-        # We will optimize psi: sd = softplus(psi).
-        #self.psi = torch.nn.Parameter(softplus_inv(torch.tensor(sd)), requires_grad=True)
-        print("Initial psi:", self.psi)
-        #self.psi = softplus_inv(torch.tensor(invgamma.rvs(self.beta_var_shape, self.beta_var_scale, size=self.covariate_count+1)))
+    # TODO: MARKED FOR REMOVAL
+    # def specify_beta_prior(self, lam, beta_var_shape, beta_var_scale):
+    #     self.lam = torch.tensor(lam, requires_grad=False)
+    #     self.beta_var_shape = torch.tensor(beta_var_shape, requires_grad=False)
+    #     self.beta_var_scale = torch.tensor(beta_var_scale, requires_grad=False)
+    #     print("Initial psi:", self.psi)
+
+    def to_device(self, device):
+        self.to(device)
 
     def log_likelihood(self, beta):
         """
@@ -119,12 +115,50 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         log_unnorm_exp = torch.matmul(X, beta_)
         if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
         norm = torch.logsumexp(log_unnorm_exp, 1)
         norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
         pi = norm_expr
         return(pi, log_unnorm_exp)
 
+    def log_lik_gradient_persample_tensorized(self, beta):
+        beta_ = beta.view(self.covariate_count, self.dim)
+        dispersion = self.softplus(self.phi)
+        J, N, P = self.rna_count, self.sample_count, self.covariate_count
+        device = beta.device
+
+        log_unnorm_exp = self.X @ beta_
+        if self.pivot:
+            log_unnorm_exp = torch.column_stack(
+                (log_unnorm_exp, torch.zeros(N, device=device))
+            )
+
+        norm = torch.logsumexp(log_unnorm_exp, dim=1)
+        norm_expr = torch.exp(log_unnorm_exp - norm[:, None]) # N × J
+
+        mean = self.s[:, None] * norm_expr
+        sigma2 = mean + dispersion * mean**2
+        r = 1.0 / dispersion
+        D = dispersion * mean**2 / sigma2 # N × J
+
+        # Pi is (N × J × J)
+        eye_J = torch.eye(J, device=device).unsqueeze(0).expand(N, -1, -1)
+        Pi = eye_J - norm_expr.unsqueeze(1)
+
+        # XPi is (N × J × P × J)
+        XPi = torch.einsum('np,njk->njkp', self.X, Pi)
+
+        c0 = -r * D + self.Y * (1 - D) # N × J
+        ret = torch.einsum('nj,njkp->njkp', c0, XPi) # N × J × P × J
+
+        grad = torch.sum(ret, dim=1).transpose(1, 2) # N × P × J
+
+        if self.pivot: # drop last column
+            grad = grad[:, :, :-1] # N × P × dim
+
+        grad = grad.reshape(N, self.dim * P)
+        return grad
+    
     ### Gradient of the model
     def log_lik_gradient_persample(self, beta):
         """
@@ -136,83 +170,56 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         Returns:
             torch.Tensor: A tensor of shape (sample_count, covariate_count * dim) containing the gradient of the log-likelihood function with respect to the model parameters for each sample.
         """        
-        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
+        beta_ = beta.view(self.covariate_count, self.dim)
         dispersion = self.softplus(self.phi)
-        J = self.rna_count
+        N, J, P = self.sample_count, self.rna_count, self.covariate_count
         log_unnorm_exp = torch.matmul(self.X, beta_)
         if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
         norm = torch.logsumexp(log_unnorm_exp, 1)
         norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
+        I = torch.eye(J, device = beta.device)
 
-        grad = torch.zeros(self.sample_count, self.dim * self.covariate_count)
-        for idx, (pi, x, y) in enumerate(zip(norm_expr, self.X, self.Y)):
+        grad = torch.zeros(self.sample_count, self.dim * self.covariate_count, device=beta.device)
+        #for idx, (pi, x, y) in enumerate(zip(norm_expr, self.X, self.Y)):
+        for n in range(N):
+            x = self.X[n]
+            y = self.Y[n]
+            pi = norm_expr[n]
             s = torch.sum(y)
+            
             mean = s * pi
             sigma2 = mean + dispersion * (mean ** 2)
-            r = 1 / dispersion
-            A = torch.eye(J) - pi.repeat((J, 1))
-            A = A.transpose(0, 1)
+            r = 1. / dispersion
+
+            A = (I - pi.expand(J, J)).t() 
             temp0 = (mean + 2 * dispersion * (mean ** 2))/sigma2
             temp1 = 1 - temp0
             temp2 = 2 - temp0
             temp = (r * temp1 + y * temp2)
-            ret1 = x.repeat((J, 1)).transpose(0,1) * temp
-            ret2 = ret1.unsqueeze(1).repeat(1, J, 1)
-            ret3 = ret2 * A
-            results_sum = torch.sum(ret3, 2)
-            grad_idx = results_sum[:,:-1] if self.pivot else results_sum
-            grad[idx,:] = grad_idx.flatten()
+            
+            # ret1 = x.repeat((J, 1)).transpose(0,1) * temp
+            # ret2 = ret1.unsqueeze(1).repeat(1, J, 1)
+            # ret3 = ret2 * A
+            ret1 = torch.outer(x, temp)
+            ret3 = ret1[:, None, :] * A
+            res = ret3.sum(dim=2)
+            if self.pivot:
+                res = res[:, :-1]
+            grad[n] = res.reshape(-1)
         return grad
-    
-    def log_lik_gradient_persample_tensorized(self, beta):
-        """
-        Computes the gradient of the log-likelihood function with respect to the model parameters for each sample.
-        Uses tensor operations instead of for loops.
-        """
-        beta = self.beta
-        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-        dispersion = self.softplus(self.phi)
-        J = self.rna_count
-        log_unnorm_exp = torch.matmul(self.X, beta_)
-        if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
-        norm = torch.logsumexp(log_unnorm_exp, 1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:, None])
 
-        mean = self.s[:, None] * norm_expr
-        sigma2 = mean + dispersion * (mean ** 2)
-        r = 1 / dispersion
-        D = dispersion * (mean ** 2) / sigma2
-
-        identity_matrix = torch.eye(J, device=norm_expr.device).unsqueeze(0).repeat(self.sample_count, 1, 1)
-        # Pi is NxJxJ with elements Pi_{n,j,k} = 1[j = k] - norm_expr_{n,k}.
-        # Transpose is necessary to get norm_expr_{n,k}.
-        Pi = (identity_matrix - norm_expr.unsqueeze(2)).transpose(1,2)
-        XPi = torch.einsum('np,njk->njkp', self.X, Pi)
-
-        rD = r * D
-        yDD = torch.einsum('nj,nj->nj', self.Y, (1 - D))
-        c0 = (-rD + yDD)
-        ret = torch.einsum('nj,njkp->njkp', c0, XPi)
-        grad = torch.sum(ret.transpose(2,3), 1).reshape(self.sample_count, J * self.covariate_count)
-        return grad
-    
-    def log_lik_gradient(self, beta, tensorized=True):
+    def log_lik_gradient(self, beta):
         """
         Computes the gradient of the log-likelihood function with respect to the model parameters.
 
         Args:
             beta (torch.Tensor): The model parameters.
-            tensorized (bool): Whether to use the tensorized version of the gradient computation.
 
         Returns:
             torch.Tensor: The gradient of the log-likelihood function with respect to the model parameters.
         """
-        if tensorized:
-            return torch.sum(self.log_lik_gradient_persample_tensorized(beta), 0)
-        else:
-            return torch.sum(self.log_lik_gradient_persample(beta), 0)
+        return torch.sum(self.log_lik_gradient_persample(beta), 0)
 
     def log_beta_prior_gradient(self, beta):
         beta_ = beta.reshape(self.dim, self.covariate_count)
@@ -220,20 +227,19 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_prior_grad = -(self.lam**2) * beta_ / sd**2
         return(log_prior_grad.flatten())
 
-    def log_posterior_gradient(self, beta, tensorized=False):
+    def log_posterior_gradient(self, beta):
         """
         Computes the gradient of the log posterior distribution with respect to the model parameters.
 
         Args:
             beta (torch.Tensor): A tensor of shape (dim * covariate_count,) representing the model parameters.
-            tensorized (bool): Whether to use the tensorized version of the gradient computation.
 
         Returns:
             torch.Tensor: A tensor of the same shape as `beta` representing the gradient of the log posterior distribution.
         """
         log_prior_grad = self.log_beta_prior_gradient(beta)
         
-        log_lik_grad = self.log_lik_gradient(beta, tensorized)
+        log_lik_grad = self.log_lik_gradient(beta)
         return log_lik_grad + log_prior_grad
 
     def log_lik_hessian_persample(self, beta):
@@ -280,6 +286,22 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             hessian[idx,:,:] = torch.sum(C1_ + C2_, 0)
         return hessian
 
+    def log_likelihood_hessian(self, beta):
+        pi = self.predict(beta, self.X)[0].detach()
+        phi = self.softplus(self.phi.detach())
+        mu = self.s[:,None] * pi
+        return hessian_nbsr(self.X.numpy(), 
+                            self.Y.numpy(), 
+                            pi.numpy(), 
+                            mu.numpy(), 
+                            phi.numpy(), 
+                            self.pivot)
+
     def log_posterior_hessian(self, beta):
         sd = self.softplus(self.psi).repeat(self.dim)
-        return torch.sum(self.log_lik_hessian_persample(beta), 0) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+        return self.log_likelihood_hessian(beta) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+
+    # def log_posterior_hessian(self, beta):
+    #     sd = self.softplus(self.psi).repeat(self.dim)
+    #     return torch.sum(self.log_lik_hessian_persample(beta), 0) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+

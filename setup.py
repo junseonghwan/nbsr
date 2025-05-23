@@ -10,7 +10,7 @@ setup(
 	'scipy>=1.11', 
 	'pandas',
     'click',
-    "setuptools",
+    'setuptools',
     'tables'
     ],
 )
