@@ -264,7 +264,7 @@ def fit_posterior(model, optimizer, iterations):
 
 def construct_model(config):
 	#click.echo(config)
-	counts_pd = pd.read_csv(config.counts_path)
+	counts_pd = pd.read_csv(config.counts_path, index_col=0)
 	if os.path.exists(config.coldata_path):
 		coldata_pd = pd.read_csv(config.coldata_path, na_filter=False, skipinitialspace=True)
 	else:
@@ -434,7 +434,7 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 			return result.x
 		log_bias = np.array(list(map(kde_mode, logRR)))
 
-	counts_pd = pd.read_csv(config.counts_path)
+	counts_pd = pd.read_csv(config.counts_path, index_col=0)
 	samples = counts_pd.columns
 	features = counts_pd.index
 
@@ -443,7 +443,7 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 	pvalue = 2 * ss.norm.cdf(-np.abs(stat))
 	# Fifth column is the adjusted p-value.
 	padj = np.array(list(map(lambda x: ss.false_discovery_control(x, method="bh"), pvalue)))
-	
+
 	# Output logRR, se, p-value, adjusted p-value.
 	# Output using h5 file format.
 	with pd.HDFStore(results_path / "nbsr_results.h5", mode='w') as store:
@@ -493,7 +493,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	column_names = list(vars)
 	mu_hat = pd.read_csv(data_path / mu_file)
 	mu_hat = torch.tensor(mu_hat.transpose().to_numpy())
-	counts_pd = pd.read_csv(data_path / "Y.csv")
+	counts_pd = pd.read_csv(data_path / "Y.csv", index_col=0) # first column is just the name of the miRNAs.
 	if os.path.exists(data_path / "X.csv"):
 		coldata_pd = pd.read_csv(data_path / "X.csv", na_filter=False, skipinitialspace=True)
 	else:
