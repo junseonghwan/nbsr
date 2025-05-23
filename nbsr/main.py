@@ -276,7 +276,7 @@ def construct_model(config):
 
 	# Allow fixed dispersion values to be passed in.
 	dispersion = read_file_if_exists(config.dispersion_path)
-	dispersion_model_path = Path(config.output_path) / config.dispersion_model_file
+	dispersion_model_path = Path(config.output_path) / config.dispersion_model_file if config.dispersion_model_file is not None else None
 	trended = config.trended_dispersion
 
 	print("Y: ", Y.shape)
