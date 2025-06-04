@@ -32,11 +32,11 @@ class DispersionModel(torch.nn.Module):
         self.b1 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=True)
         self.b2 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=True)
         if self.Z is None:
-            self.beta = None
+            self.b = None
             self.covariate_count = 0
         else:
             self.covariate_count = Z.shape[1]
-            self.beta = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
+            self.b = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
         
         self.estimate_sd = estimate_sd
         if estimate_sd:
@@ -60,7 +60,7 @@ class DispersionModel(torch.nn.Module):
         if self.Z is None:
             val3 = 0
         else:
-            val3 = torch.mm(self.Z, self.beta.unsqueeze(-1)).expand(-1, self.feature_count)
+            val3 = torch.mm(self.Z, self.b.unsqueeze(-1)).expand(-1, self.feature_count)
         log_phi_mean = val0 + val1 + val2 + val3
         if self.estimate_sd:
             log_phi_mean += (self.get_sd() ** 2) * 0.5

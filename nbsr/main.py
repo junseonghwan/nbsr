@@ -271,8 +271,7 @@ def construct_model(config):
 		coldata_pd = None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
 	X, x_map = construct_tensor_from_coldata(coldata_pd, config.column_names, counts_pd.shape[1])
-	# We are not using z variables for now.
-	#Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
+	Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
 
 	# Allow fixed dispersion values to be passed in.
 	dispersion = read_file_if_exists(config.dispersion_path)
@@ -281,8 +280,8 @@ def construct_model(config):
 
 	print("Y: ", Y.shape)
 	print("X: ", X.shape)
-	# if Z is not None:
-	# 	print("Z: ", Z.shape)
+	if Z is not None:
+		print("Z: ", Z.shape)
 
 	lam = config.lam
 	shape = config.shape
@@ -299,7 +298,7 @@ def construct_model(config):
 		if trended:
 			if disp_model is None:
 				print(f"Dispersion trend will be estimated.")
-				disp_model = DispersionModel(Y, estimate_sd=config.estimate_dispersion_sd)
+				disp_model = DispersionModel(Y, Z, estimate_sd=config.estimate_dispersion_sd)
 			model = NBSRTrended(X, Y, disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot)
 		else:
 			print("Run NBSR with shared dispersion per feature.")
