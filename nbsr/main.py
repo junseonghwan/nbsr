@@ -388,12 +388,12 @@ def run(config):
 	np.savetxt(output_path / "nbsr_pi.csv", pi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(output_path / "nbsr_dispersion.csv", phi.data.numpy().transpose(), delimiter=',')
 
+	torch.save(state_dict, output_path / checkpoint_filename)
+	config.dump_json(output_path / "config.json")
+
 	print("Compute observed Information matrix.")
 	I = compute_observed_information(model, config.use_cuda_if_available)
 	np.save(output_path / fisher_information_filename, I.detach().cpu().numpy())
-
-	torch.save(state_dict, output_path / checkpoint_filename)
-	config.dump_json(output_path / "config.json")
 
 	return(curr_loss_history, model)
 
@@ -575,9 +575,6 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	np.savetxt(data_path / "nbsr_pi.csv", pi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(data_path / "nbsr_dispersion.csv", phi.data.numpy().transpose(), delimiter=',')
 
-	I = compute_observed_information(nbsr_model)
-	np.save(data_path / fisher_information_filename, I)
-
 	model_state = {
 		'model_state_dict': nbsr_model.state_dict(),
 		'best_model_state_dict': nbsr_model.state_dict(),
@@ -591,6 +588,9 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	state_dict["x_map"] = x_map
 	torch.save(state_dict, config.output_path / checkpoint_filename)
 	config.dump_json(config.output_path / "config.json")
+
+	I = compute_observed_information(nbsr_model)
+	np.save(data_path / fisher_information_filename, I)
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
