@@ -170,42 +170,54 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         Returns:
             torch.Tensor: A tensor of shape (sample_count, covariate_count * dim) containing the gradient of the log-likelihood function with respect to the model parameters for each sample.
         """        
-        beta_ = beta.view(self.covariate_count, self.dim)
-        dispersion = self.softplus(self.phi)
-        N, J, P = self.sample_count, self.rna_count, self.covariate_count
-        log_unnorm_exp = torch.matmul(self.X, beta_)
-        if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
-        norm = torch.logsumexp(log_unnorm_exp, 1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        I = torch.eye(J, device = beta.device)
+        device = beta.device
+        dtype  = beta.dtype
 
-        grad = torch.zeros(self.sample_count, self.dim * self.covariate_count, device=beta.device)
+        N, J, P = self.sample_count, self.rna_count, self.covariate_count
+        dim = self.dim
+
+        beta_ = beta.view(P, dim)
+        dispersion = self.softplus(self.phi)
+        r = 1. / dispersion
+        grad = torch.empty(N, P * dim, device=device, dtype=dtype)
+        
+        # log_unnorm_exp = torch.matmul(self.X, beta_)
+        # if self.pivot:
+        #     log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
+        # norm = torch.logsumexp(log_unnorm_exp, 1)
+        # norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
+        # I = torch.eye(J, device = beta.device)
+
+        # grad = torch.zeros(self.sample_count, self.dim * self.covariate_count, device=beta.device)
         #for idx, (pi, x, y) in enumerate(zip(norm_expr, self.X, self.Y)):
         for n in range(N):
             x = self.X[n]
             y = self.Y[n]
-            pi = norm_expr[n]
             s = torch.sum(y)
-            
+
+            logits = x @ beta_
+            if self.pivot:
+                # append baseline (zero) column for softmax over J classes
+                logits = torch.cat([logits, torch.zeros(1, device=device, dtype=dtype)], dim=0)
+            m  = torch.logsumexp(logits, dim=0)
+            pi = torch.exp(logits - m)    # (J,)
+
             mean = s * pi
             sigma2 = mean + dispersion * (mean ** 2)
-            r = 1. / dispersion
 
-            A = (I - pi.expand(J, J)).t() 
-            temp0 = (mean + 2 * dispersion * (mean ** 2))/sigma2
-            temp1 = 1 - temp0
-            temp2 = 2 - temp0
-            temp = (r * temp1 + y * temp2)
-            
-            # ret1 = x.repeat((J, 1)).transpose(0,1) * temp
-            # ret2 = ret1.unsqueeze(1).repeat(1, J, 1)
-            # ret3 = ret2 * A
-            ret1 = torch.outer(x, temp)
-            ret3 = ret1[:, None, :] * A
-            res = ret3.sum(dim=2)
+            # temp_j = r*(1 - t0_j) + y_j*(2 - t0_j), where t0_j = (mean + 2*disp*mean^2)/sigma2
+            t0   = (mean + 2 * dispersion * (mean ** 2)) / sigma2
+            temp = r * (1.0 - t0) + y * (2.0 - t0)     # (J,)
+
+            # res = outer(x, temp) - [sum_j temp_j] * outer(x, pi)
+            # (rank-1 correction: (I - pi 1^T) applied without J×J)
+            xt  = torch.outer(x, temp)                  # (P, J)
+            res = xt - torch.outer(x, pi) * temp.sum()  # (P, J)
+
+            # Drop the pivot column to match parameter dimension when pivoting
             if self.pivot:
-                res = res[:, :-1]
+                res = res[:, :-1]                       # (P, dim) with dim = J-1
+
             grad[n] = res.reshape(-1)
         return grad
 
