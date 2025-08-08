@@ -181,15 +181,6 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         r = 1. / dispersion
         grad = torch.empty(N, P * dim, device=device, dtype=dtype)
         
-        # log_unnorm_exp = torch.matmul(self.X, beta_)
-        # if self.pivot:
-        #     log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
-        # norm = torch.logsumexp(log_unnorm_exp, 1)
-        # norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        # I = torch.eye(J, device = beta.device)
-
-        # grad = torch.zeros(self.sample_count, self.dim * self.covariate_count, device=beta.device)
-        #for idx, (pi, x, y) in enumerate(zip(norm_expr, self.X, self.Y)):
         for n in range(N):
             x = self.X[n]
             y = self.Y[n]
