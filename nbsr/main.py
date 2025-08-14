@@ -42,7 +42,7 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 		return True
 	else:
 		print(f"Not converged")
-		return False	
+		return False
 
 def compute_observed_information_torch(model, use_cuda_if_available=True):
 	print("Computing Hessian using torch...")
@@ -164,14 +164,11 @@ def inference_beta(model, var, w1, w0, x_map, I):
 	#res["adjPValue"] = false_discovery_control(res["pvalue"], method="bh")
 	return res
 
-def inference_logRR(model, var, w1, w0, x_map, I):
+def inference_logRR(model, var, w1, w0, x_map, I, cholesky=False):
 	
+	# Assume I is covariate major (j=0,d=0), ..., (j=model.dim,d=0), ..., (j=0,d=P), ..., (j=model.dim,d=P).
 	assert I is not None
 
-	# we will do the computation on CPU.
-	model.to_device("cpu")
-
-	S = torch.linalg.pinv(I)
 	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
 	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
 	col_idx0 = x_map[var_level0] if var_level0 in x_map else None
@@ -201,41 +198,85 @@ def inference_logRR(model, var, w1, w0, x_map, I):
 	logRRi = torch.log(pi1) - torch.log(pi0)
 	log2RRi = torch.log2(pi1) - torch.log2(pi0)
 
-	# The gradient of g_j wrt (k,d) is expressed by 
-	# z_{1,d} (1[j = k] - \pi_{k|w_1}) - z_{0,d} (1[j = k] - \pi_{k|w_0}).
-	# We will construct two tensors ipi1 and ipi0 of size (N, J, J) where N is the sample count, K is the number of features.
-	# ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}) and ipi0[n,j,k] = (1[j = k] - \pi_{k|z_{0,n}}).
-	# one exception is that if pivot is used, the entry ipi1[n,J,k] = 0 - pi_{k|z_{1,n}}  (likewise for ipi0).
-	identity = torch.eye(model.dim) # (J-1, J-1) or (J, J)
-	if model.pivot:
-		identity = torch.cat([identity, torch.zeros(1, model.dim)], dim=0) #(J, J-1), the last row of zeros.
-	identity_mat = torch.tile(identity, (model.sample_count, 1, 1))
-	
-	# Use broadcasting to compute the difference between the identity matrix and pi1, pi0.
-	# Since we have a tensor of size (N, J, J), subtracting pi1 of size (N, J), we need to unsqueeze pi1 along the last dimension to get (N, J, 1).
-	# Then, broadcasting will essentially make a copy of pi1 along the last dimension to get (N, J, J) where the entries along the last dimension are all the same.
-	# That is ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}).
-	ipi0 = (identity_mat - pi0.unsqueeze(2)).transpose(1,2)
-	ipi1 = (identity_mat - pi1.unsqueeze(2)).transpose(1,2)
+	N, J = pi0.shape
+	P    = model.covariate_count
+	d    = model.dim # J-1 if model.pivot; J otherwise.
+	se = torch.zeros((N, J), dtype=model.beta.dtype, device=model.beta.device)
 
-	# We will take the product of ipi1 and ipi0 with Z1 and Z0, respectively.
-	# The result will be a tensor of size (N, J, J*P).
-	# ipi0 has dimension (N, J, J) while Z0 has dimension (N, P).
-	# We want the results to be ret0[n,j,k,d] = ipi0[n,j,k] * Z0[n,d].
-	# Again, we will use broadcating. 
-	# First, expand Z0 to have dimension (N, 1, 1, P).
-	# Expand ipi0 to have dimension (N, J, J, 1).
-	ret0 = ipi0.unsqueeze(3) * Z0.unsqueeze(1).unsqueeze(2)
-	ret1 = ipi1.unsqueeze(3) * Z1.unsqueeze(1).unsqueeze(2)
-	ret = ret1 - ret0
-	ret = ret.transpose(2, 3).reshape(model.sample_count, model.rna_count, model.dim * model.covariate_count)
+	# Find standard estimates for logRR.
+	A = torch.zeros((N,J,d*P), dtype=model.beta.dtype, device=model.beta.device)
+	if cholesky:
+		print("Cholesky decomposition.")
+		I = 0.5*(I + I.T)
+		eye = torch.eye(I.size(0), device=I.device, dtype=I.dtype)
+		eps = 0.0
+		for k in range(6):
+			try:
+				L = torch.linalg.cholesky(I + eps*eye)
+				break
+			except RuntimeError:
+				print(f"Increasing jitter")
+				eps = 10.0**(-8 + k)     # 1e-8, 1e-7, ..., 1e-3
 
-	S_batch = S.unsqueeze(0).expand(model.sample_count, -1, -1)
-	cov_mat = torch.bmm(torch.bmm(ret, S_batch), ret.transpose(1, 2))
+		for n in range(N):
+			x0 = Z0[n]
+			x1 = Z1[n]
+			dx = x1 - x0
+			# Note: the order of kron matters as we want covariate major.
+			# torch.kron(x1, pi1[n]) yields vector of length JP -> (x1[0] pi1, ..., x1[P] pi1).
+			# similarly for torch.kron(x0, pi0[n])
+			c = torch.kron(x1, pi1[n,:d]) - torch.kron(x0, pi0[n,:d]) 
+			for j in range(J):
+				# The entry in c corresponding to 1[j = k] should add dx = (x1 - x0).
+				a_j = -c.clone()
+				if not model.pivot or j < d:
+					a_j[j::model.dim] += dx
+				v_j = torch.cholesky_solve(a_j.unsqueeze(1), L).squeeze(1)
+				se[n,j] = (a_j * v_j).sum().sqrt()
+				A[n,j,:] = a_j
+	else:
+		print("Batched computation.")
+		#S = torch.linalg.pinv(I)
+		S = torch.linalg.inv(I)
+		# The gradient of g_j wrt (k,d) is expressed by 
+		# z_{1,d} (1[j = k] - \pi_{k|w_1}) - z_{0,d} (1[j = k] - \pi_{k|w_0}).
+		# We will construct two tensors ipi1 and ipi0 of size (N, J, J) where N is the sample count, K is the number of features.
+		# ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}) and ipi0[n,j,k] = (1[j = k] - \pi_{k|z_{0,n}}).
+		# one exception is that if pivot is used, the entry ipi1[n,J,k] = 0 - pi_{k|z_{1,n}}  (likewise for ipi0).
+		#identity = torch.tile(torch.eye(J, d, device=pi0.device), (model.sample_count, 1, 1)) # (N, J, J-1)
+		base_identity = torch.eye(J, d, device=pi0.device)
+		# Create a memory-efficient view of shape (N, J, d) without copying data
+		identity = base_identity.unsqueeze(0).expand(N, J, d)
+
+		# Use broadcasting to compute the difference between the identity matrix and pi1, pi0.
+		# identity is a tensor of size (N, J, d), subtracting pi1 of size (N, J), we need to unsqueeze pi1 along the last dimension to get (N, J, 1).
+		# Then, broadcasting will essentially make a copy of pi1 along the last dimension to get (N, J, J) where the entries along the last dimension are all the same.
+		# That is ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}) where k = 1, ..., d.
+		# The last row J is just \pi_{k|z_{1,n}} for k = 1, ..., d.
+		ipi0 = (identity - pi0[:, :d].unsqueeze(1)) # (N, J, d) - (N, 1, d)
+		ipi1 = (identity - pi1[:, :d].unsqueeze(1))
+
+		# We will take the product of ipi1 and ipi0 with Z1 and Z0, respectively.
+		# The result will be a tensor of size (N, J, d*P).
+		# ipi0 has dimension (N, J, d) while Z0 has dimension (N, P).
+		# We want the results to be ret0[n,j,k,d] = ipi0[n,j,k] * Z0[n,d].
+		# Again, we will use broadcating. 
+		# First, expand Z0 to have dimension (N, 1, 1, P).
+		# Expand ipi0 to have dimension (N, J, d, 1).
+		ret0 = ipi0.unsqueeze(3) * Z0.unsqueeze(1).unsqueeze(2)
+		ret1 = ipi1.unsqueeze(3) * Z1.unsqueeze(1).unsqueeze(2)
+		ret = ret1 - ret0
+		# PyTorch uses row-major (C-style) flattening, meaning it flattens the last dimension fastest.
+		# Since I is covariate-major (feature changes fastest), we need to transpose.
+		ret = ret.transpose(2, 3).reshape(N, J, d * P)
+
+		S_batch = S.unsqueeze(0).expand(model.sample_count, -1, -1)
+		cov_mat = torch.bmm(torch.bmm(ret, S_batch), ret.transpose(1, 2))
+		se.copy_(torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)))
 
 	logFC = logRRi.data.numpy()
 	log2FC = log2RRi.data.numpy()
-	return (logFC, log2FC, cov_mat)
+	return (logFC, log2FC, se.data.numpy())
 
 def fit_posterior(model, optimizer, iterations):
 	# Fit the model.
@@ -397,7 +438,7 @@ def run(config):
 
 	return(curr_loss_history, model)
 
-def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False):
+def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False, cholesky=False):
 	results_path = Path(results_path)
 	config = NBSRConfig.load_json(results_path / "config.json")
 	state_dict = torch.load(results_path / checkpoint_filename, weights_only=False)
@@ -419,8 +460,8 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 		I = compute_observed_information(model, config.use_cuda_if_available).detach().cpu()
 		np.save(results_path / fisher_information_filename, I)
 
-	logRR, log2RR, cov_mat  = inference_logRR(model, var, w1, w0, x_map, I)
-	logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
+	logRR, log2RR, logRR_std  = inference_logRR(model, var, w1, w0, x_map, I, cholesky)
+	#logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 
 	# Compute the test statistic and the p-values.
 	log_bias = 0
@@ -645,8 +686,9 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 @click.argument('w0', type=str) # "level to be used on the denominator"
 @click.option('--absolute_fc', default=False, is_flag=True, type=bool)
 @click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
-def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian):
-	generate_results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian)
+@click.option('--cholesky', is_flag=True, show_default=True, default=False, type=bool)
+def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, cholesky):
+	generate_results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, cholesky)
 
 	# res_beta = inference_beta(model, var, w1, w0, config["x_map"], I)
 	# res_beta.to_csv(os.path.join(checkpoint_path, "coefficients.csv"), index=False)
