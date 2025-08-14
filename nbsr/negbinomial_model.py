@@ -196,7 +196,6 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             mean = s * pi
             sigma2 = mean + dispersion * (mean ** 2)
 
-            # temp_j = r*(1 - t0_j) + y_j*(2 - t0_j), where t0_j = (mean + 2*disp*mean^2)/sigma2
             t0   = (mean + 2 * dispersion * (mean ** 2)) / sigma2
             temp = r * (1.0 - t0) + y * (2.0 - t0)     # (J,)
 
