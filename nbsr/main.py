@@ -31,6 +31,7 @@ torch_dtype=torch.float32
 checkpoint_filename = "checkpoint.pth"
 model_state_key = "model_state"
 hessian_filename = "hessian.npy"
+covariance_path = "covariance.pth"
 
 @click.group()
 def cli():
@@ -205,6 +206,7 @@ def inference_logRR(model, var, w1, w0, x_map, I, cholesky=False):
 
 	# Find standard estimates for logRR.
 	A = torch.zeros((N,J,d*P), dtype=model.beta.dtype, device=model.beta.device)
+	cov_mat = None
 	if cholesky:
 		print("Cholesky decomposition.")
 		I = 0.5*(I + I.T)
@@ -276,7 +278,7 @@ def inference_logRR(model, var, w1, w0, x_map, I, cholesky=False):
 
 	logFC = logRRi.data.numpy()
 	log2FC = log2RRi.data.numpy()
-	return (logFC, log2FC, se.data.numpy())
+	return (logFC, log2FC, se.data.numpy(), cov_mat)
 
 def fit_posterior(model, optimizer, iterations):
 	# Fit the model.
@@ -469,7 +471,7 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 		I = compute_negative_hessian_log_posterior(model, config.use_cuda_if_available).detach().cpu()
 		np.save(results_path / hessian_filename, I)
 
-	logRR, log2RR, logRR_std  = inference_logRR(model, var, w1, w0, x_map, I, cholesky)
+	logRR, log2RR, logRR_std, cov_mat  = inference_logRR(model, var, w1, w0, x_map, I, cholesky)
 	#logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 
 	# Compute the test statistic and the p-values.
@@ -493,6 +495,10 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 	pvalue = 2 * ss.norm.cdf(-np.abs(stat))
 	# Fifth column is the adjusted p-value.
 	padj = np.array(list(map(lambda x: ss.false_discovery_control(x, method="bh"), pvalue)))
+
+	# Save covariance matrix (None when the Cholesky path is used, which only computes the diagonal).
+	if cov_mat is not None:
+		torch.save(cov_mat, comparison_path / covariance_path)
 
 	# Output logRR, se, p-value, adjusted p-value.
 	# Output using h5 file format.
