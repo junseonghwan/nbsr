@@ -24,7 +24,7 @@ torch.set_printoptions(precision=9)
 
 checkpoint_filename = "checkpoint.pth"
 model_state_key = "model_state"
-fisher_information_filename = "information.npy"
+hessian_filename = "hessian.npy"
 
 @click.group()
 def cli():
@@ -45,7 +45,7 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 		print(f"Not converged")
 		return False	
 
-def compute_observed_information_torch(model, use_cuda_if_available=True):
+def compute_negative_hessian_log_posterior_torch(model, use_cuda_if_available=True):
 	print("Computing Hessian using torch...")
 	# Check if CUDA is available.
 	if use_cuda_if_available:
@@ -69,16 +69,9 @@ def compute_observed_information_torch(model, use_cuda_if_available=True):
 
 	return -gradient_matrix
 
-# TODO: MARKED FOR REMOVAL.
-# Numba related.
-# def compute_observed_information_numba(model):
-# 	print("Computing Hessian using Numba...")
-# 	H = model.log_likelihood_hessian(model.beta)
-# 	return -H
-
-def compute_observed_information(model, use_cuda_if_available=True):
+def compute_negative_hessian_log_posterior(model, use_cuda_if_available=True):
 	start = time.perf_counter()
-	I = compute_observed_information_torch(model, use_cuda_if_available)
+	I = compute_negative_hessian_log_posterior_torch(model, use_cuda_if_available)
 	end = time.perf_counter()
 	print("Hessian computation time = {}s".format((end - start)))
 	return I
@@ -113,8 +106,8 @@ def inference_beta(model, var, w1, w0, x_map, I):
 		- `pValue`: the p-value.
 		- `adjPValue`: the Benjamini-Hochberg adjusted p-value.
 	"""
-	# Compute observed information matrix.
-	# Compute (pseudo) inverse of observed Fisher information matrix to get covariance matrix.
+	# Compute negative hessian matrix.
+	# Compute (pseudo) inverse of negative hessian matrix to get covariance matrix.
 	# Compute standard errors.
 	assert I is not None
 
@@ -392,9 +385,9 @@ def run(config):
 	torch.save(state_dict, output_path / checkpoint_filename)
 	config.dump_json(output_path / "config.json")
 
-	print("Compute observed Information matrix.")
-	I = compute_observed_information(model, config.use_cuda_if_available)
-	np.save(output_path / fisher_information_filename, I.detach().cpu().numpy())
+	print("Compute negative Hessian matrix.")
+	I = compute_negative_hessian_log_posterior(model, config.use_cuda_if_available)
+	np.save(output_path / hessian_filename, I.detach().cpu().numpy())
 
 	return(curr_loss_history, model)
 
@@ -422,12 +415,12 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 
 	# Check if hessian matrix exists, compute it otherwise.
 	I = None
-	if not recompute_hessian and os.path.exists(results_path / fisher_information_filename):
-		I = torch.from_numpy(np.load(results_path / fisher_information_filename)).double()
+	if not recompute_hessian and os.path.exists(results_path / hessian_filename):
+		I = torch.from_numpy(np.load(results_path / hessian_filename)).double()
 	else: # compute Hessian
-		print("Compute observed Information matrix.")
-		I = compute_observed_information(model, config.use_cuda_if_available).detach().cpu()
-		np.save(results_path / fisher_information_filename, I)
+		print("Compute negative hessian matrix.")
+		I = compute_negative_hessian_log_posterior(model, config.use_cuda_if_available).detach().cpu()
+		np.save(results_path / hessian_filename, I)
 
 	logRR, log2RR, cov_mat  = inference_logRR(model, var, w1, w0, x_map, I)
 	logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
@@ -599,8 +592,8 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	torch.save(state_dict, config.output_path / checkpoint_filename)
 	config.dump_json(config.output_path / "config.json")
 
-	I = compute_observed_information(nbsr_model)
-	np.save(data_path / fisher_information_filename, I)
+	I = compute_negative_hessian_log_posterior(nbsr_model)
+	np.save(data_path / hessian_filename, I)
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))
@@ -677,36 +670,3 @@ cli.add_command(results)
 if __name__ == '__main__':
     cli()
 
-
-
-# TODO: MARKED FOR REMOVAL
-# def get_config(data_path, output_path, cols, z_cols, lr, lam, shape, scale, estimate_dispersion_sd, dispersion_model_path, trended_dispersion, pivot):
-# 	config = {
-# 		"data_path": data_path,
-# 		"output_path": output_path,
-# 		"counts_path": os.path.join(data_path, "Y.csv"),
-# 		"coldata_path": os.path.join(data_path, "X.csv"),
-# 		"dispersion_path": os.path.join(data_path, "dispersion.csv"),
-# 		"prior_sd_path": os.path.join(data_path, "prior_sd.csv"),
-# 		"column_names": cols,
-# 		"z_columns": z_cols,
-# 		"lr": lr,
-# 		"lam": lam,
-# 		"shape": shape,
-# 		"scale": scale,
-# 		"estimate_dispersion_sd": estimate_dispersion_sd,
-# 		"trended_dispersion": trended_dispersion,
-# 		"dispersion_model_path": dispersion_model_path,
-# 		"pivot": pivot
-# 	}
-# 	return config
-
-# TODO: MARK FOR REMOVAL.
-# @click.command()
-# @click.argument('checkpoint_path', type=click.Path(exists=True))
-# @click.option('-i', '--iterations', default=1000, type=int)
-# @click.option('--tol', default=0.01, type=float)
-# @click.option('--lookback_iterations', default=50, type=int)
-# def resume(checkpoint_path, iterations, tol, lookback_iterations):
-# 	state_dict = torch.load(os.path.join(checkpoint_path, checkpoint_filename), weights_only=False)
-# 	run(state_dict, iterations, tol, lookback_iterations)
