@@ -1,4 +1,5 @@
 import os
+import re
 import copy
 import shutil
 import time
@@ -203,7 +204,7 @@ def inference_logRR(model, var, w1, w0, x_map, I):
 
 	# The gradient of g_j wrt (k,d) is expressed by 
 	# z_{1,d} (1[j = k] - \pi_{k|w_1}) - z_{0,d} (1[j = k] - \pi_{k|w_0}).
-	# We will construct two tensors ipi1 and ipi0 of size (N, J, J) where N is the sample count, K is the number of features.
+	# We will construct two tensors ipi1 and ipi0 of size (N, J, J) where N is the sample count, J is the number of features.
 	# ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}) and ipi0[n,j,k] = (1[j = k] - \pi_{k|z_{0,n}}).
 	# one exception is that if pivot is used, the entry ipi1[n,J,k] = 0 - pi_{k|z_{1,n}}  (likewise for ipi0).
 	identity = torch.eye(model.dim) # (J-1, J-1) or (J, J)
@@ -215,8 +216,8 @@ def inference_logRR(model, var, w1, w0, x_map, I):
 	# Since we have a tensor of size (N, J, J), subtracting pi1 of size (N, J), we need to unsqueeze pi1 along the last dimension to get (N, J, 1).
 	# Then, broadcasting will essentially make a copy of pi1 along the last dimension to get (N, J, J) where the entries along the last dimension are all the same.
 	# That is ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}).
-	ipi0 = (identity_mat - pi0.unsqueeze(2)).transpose(1,2)
-	ipi1 = (identity_mat - pi1.unsqueeze(2)).transpose(1,2)
+	ipi0 = (identity_mat - pi0.unsqueeze(2))
+	ipi1 = (identity_mat - pi1.unsqueeze(2))
 
 	# We will take the product of ipi1 and ipi0 with Z1 and Z0, respectively.
 	# The result will be a tensor of size (N, J, J*P).
@@ -397,8 +398,17 @@ def run(config):
 
 	return(curr_loss_history, model)
 
+def _safe_name(x):
+    """Convert arbitrary string to filesystem-safe name."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))
+
 def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False):
 	results_path = Path(results_path)
+	
+	comparison_name = f"{_safe_name(var)}__{_safe_name(w1)}_vs_{_safe_name(w0)}"
+	comparison_path = results_path / comparison_name
+	comparison_path.mkdir(parents=True, exist_ok=True)
+
 	config = NBSRConfig.load_json(results_path / "config.json")
 	state_dict = torch.load(results_path / checkpoint_filename, weights_only=False)
 	x_map = state_dict["x_map"]
@@ -446,7 +456,7 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 
 	# Output logRR, se, p-value, adjusted p-value.
 	# Output using h5 file format.
-	with pd.HDFStore(results_path / "nbsr_results.h5", mode='w') as store:
+	with pd.HDFStore(comparison_path / "nbsr_results.h5", mode='w') as store:
 		store['logRR'] = pd.DataFrame(logRR.T, index=features, columns=samples)
 		store['se'] = pd.DataFrame(logRR_std.T, index=features, columns=samples)
 		store['stat'] = pd.DataFrame(stat.T, index=features, columns=samples)
@@ -463,7 +473,7 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 			"log2FC": log2RR[0,:],
 			"pvalue": pvalue[0,:],
 			"padj": padj[0,:]})
-		res.to_csv(results_path / "nbsr_results.csv", index=False)
+		res.to_csv(comparison_path / "nbsr_results.csv", index=False)
 		return res
 
 	return None
