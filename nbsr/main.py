@@ -209,16 +209,16 @@ def inference_logRR(model, var, w1, w0, x_map, I):
 	# Since we have a tensor of size (N, J, J), subtracting pi1 of size (N, J), we need to unsqueeze pi1 along the last dimension to get (N, J, 1).
 	# Then, broadcasting will essentially make a copy of pi1 along the last dimension to get (N, J, J) where the entries along the last dimension are all the same.
 	# That is ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}).
-	ipi0 = (identity_mat - pi0.unsqueeze(2))
-	ipi1 = (identity_mat - pi1.unsqueeze(2))
+	ipi0 = identity_mat - pi0[:, :model.dim].unsqueeze(1)  # (N, J, model.dim)
+	ipi1 = identity_mat - pi1[:, :model.dim].unsqueeze(1)
 
 	# We will take the product of ipi1 and ipi0 with Z1 and Z0, respectively.
-	# The result will be a tensor of size (N, J, J*P).
-	# ipi0 has dimension (N, J, J) while Z0 has dimension (N, P).
+	# The result will be a tensor of size (N, J, dim*P).
+	# ipi0 has dimension (N, J, dim) while Z0 has dimension (N, P).
 	# We want the results to be ret0[n,j,k,d] = ipi0[n,j,k] * Z0[n,d].
 	# Again, we will use broadcating. 
 	# First, expand Z0 to have dimension (N, 1, 1, P).
-	# Expand ipi0 to have dimension (N, J, J, 1).
+	# Expand ipi0 to have dimension (N, J, dim, 1).
 	ret0 = ipi0.unsqueeze(3) * Z0.unsqueeze(1).unsqueeze(2)
 	ret1 = ipi1.unsqueeze(3) * Z1.unsqueeze(1).unsqueeze(2)
 	ret = ret1 - ret0
