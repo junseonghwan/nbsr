@@ -662,6 +662,162 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian):
 	# cov_mat is NxKxK tensor. 
 	# np.save(os.path.join(output_path, "nbsr_logRR_cov.npy"), cov_mat.data.numpy())
 
+@click.command()
+@click.argument('data_path', type=click.Path(exists=True))
+@click.argument('vars', nargs=-1)
+@click.option('-o', '--n_outer', default=20, type=int, help="Number of outer coordinate ascent iterations.")
+@click.option('-h', '--n_hyper_iter', default=50, type=int, help="Number of Adam steps for hyperparameter update.")
+@click.option('--z_columns', multiple=True, help="Covariate names for dispersion model.")
+@click.option('--trend_coef_file', default=None, type=str, help="Path to DESeq2 trend coefficients CSV (a0, a1).")
+@click.option('--mu_bar_file', default=None, type=str, help="Path to per-gene mean normalized counts CSV.")
+@click.option('--b_prior_sd', default=0.1, type=float, help="Prior SD for b_j.")
+@click.option('-r', '--runs', default=1, type=int, help="Number of optimization runs.")
+def train_fnb(
+    data_path,
+    vars,
+    n_outer,
+    n_hyper_iter,
+    z_columns,
+    trend_coef_file,
+    beta_init_file,
+    mu_bar_file,
+    b_prior_sd,
+    runs,
+):
+    data_path = Path(data_path)
+    losses = []
+
+    for run_no in range(runs):
+        outpath = data_path / ("run" + str(run_no))
+        outpath.mkdir(parents=True, exist_ok=True)
+
+        # Load data
+        Y = pd.read_csv(data_path / "Y.csv", index_col=0)
+        X_df = pd.read_csv(data_path / "X.csv", index_col="sample_name")
+
+        # Build design matrix
+        formula = " + ".join(vars) if vars else "1"
+        X_design = patsy.dmatrix(formula, X_df, return_type="dataframe")
+
+        Y_tensor = torch.tensor(Y.values.T, dtype=torch.float64)   # (N, P)
+        X_tensor = torch.tensor(X_design.values, dtype=torch.float64)  # (N, K)
+
+        # Size factors
+        size_factors = Y_tensor.sum(dim=1)
+        size_factors = size_factors / size_factors.median()
+
+        # Dispersion covariates W
+        if z_columns:
+            W_df = X_df[list(z_columns)]
+            W_tensor = torch.tensor(
+                patsy.dmatrix("0 + " + " + ".join(z_columns), W_df, return_type="dataframe").values,
+                dtype=torch.float64
+            )
+            n_disp_covariates = W_tensor.shape[1]
+        else:
+            W_tensor = None
+            n_disp_covariates = 0
+
+        # Trend prior
+        if trend_coef_file is not None:
+            coefs = pd.read_csv(trend_coef_file, index_col=0).squeeze()
+            a0 = float(coefs["a0"])
+            a1 = float(coefs["a1"])
+        else:
+            raise ValueError("--trend_coef_file is required.")
+
+        # mu_bar
+        if mu_bar_file is not None:
+            mu_bar = torch.tensor(
+                pd.read_csv(mu_bar_file, index_col=0).squeeze().values,
+                dtype=torch.float64
+            )
+        else:
+            # Compute from normalized counts
+            mu_bar = (Y_tensor / size_factors.unsqueeze(1)).mean(dim=0)
+
+        n_features = Y_tensor.shape[1]
+        n_mean_covariates = X_tensor.shape[1]
+
+        # Build model
+        trend_prior = LogDispersionTrendPrior(
+            intercept=a0,
+            slope=a1,
+        )
+        dispersion_model = MeanPowerCovariateDispersion(
+            n_features=n_features,
+            n_disp_covariates=n_disp_covariates,
+            disp_trend_prior=trend_prior,
+            mu_bar=mu_bar,
+            b_prior_sd=b_prior_sd,
+        )
+        model = FeaturewiseNegBinom(
+            n_features=n_features,
+            n_mean_covariates=n_mean_covariates,
+            dispersion_model=dispersion_model,
+        )
+
+        # Initialize beta from DESeq2 if provided
+        if beta_init_file is not None:
+            beta_df = pd.read_csv(beta_init_file, index_col=0)
+            beta_ln = torch.tensor(
+                beta_df.values * np.log(2), dtype=torch.float64
+            )  # log2 -> ln, shape (P, K)
+            with torch.no_grad():
+                model.beta.data.copy_(beta_ln.T)  # (K, P)
+        else:
+            # Initialize intercept from log mean normalized counts
+            with torch.no_grad():
+                log_mean = torch.log(mu_bar.clamp(min=1e-6))
+                model.beta.data[0] = log_mean
+
+        # Fit
+        loss_history = fit(
+            model=model,
+            Y=Y_tensor,
+            X=X_tensor,
+            W=W_tensor,
+            size_factors=size_factors,
+            n_outer=n_outer,
+            n_hyper_iter=n_hyper_iter,
+        )
+        losses.append(np.min(loss_history))
+
+        # Save outputs
+        torch.save(model.state_dict(), outpath / "model.pt")
+        pd.DataFrame({"loss": loss_history}).to_csv(outpath / "loss_history.csv")
+
+        # Save key parameter estimates
+        beta_out = pd.DataFrame(
+            model.beta.detach().cpu().numpy().T,  # (P, K)
+            index=Y.index,
+            columns=X_design.columns
+        )
+        beta_out.to_csv(outpath / "beta.csv")
+
+        a_out = pd.Series(
+            model.dispersion_model.a.detach().cpu().numpy(),
+            index=Y.index,
+            name="a_j"
+        )
+        a_out.to_csv(outpath / "a_j.csv")
+
+        b_out = pd.Series(
+            model.dispersion_model.b.detach().cpu().numpy(),
+            index=Y.index,
+            name="b_j"
+        )
+        b_out.to_csv(outpath / "b_j.csv")
+
+    # Find best run and copy outputs to data_path
+    best_run = int(np.argmin(losses))
+    best_run_path = data_path / ("run" + str(best_run))
+    for filename in os.listdir(best_run_path):
+        file_path = best_run_path / filename
+        if os.path.isfile(file_path):
+            shutil.copy2(file_path, data_path / filename)
+
+    print(f"Best run: {best_run} | loss: {losses[best_run]:.4f}")
 
 cli.add_command(eb)
 cli.add_command(train)

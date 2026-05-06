@@ -32,37 +32,35 @@ class BaseDispersionModel(torch.nn.Module):
 
 class MeanPowerCovariateDispersion(BaseDispersionModel):
     """
-    log phi_ij = a_j + b_j log mu_ij + W_i gamma
+    log phi_ij = a_j + b_j log mu_ij + W_i^T gamma_j
     """
 
     def __init__(
         self,
-        n_features,
-        n_disp_covariates,
+        n_covariates,
         disp_trend_prior : LogDispersionTrendPrior,
-        mu_bar : torch.Tensor,
+        mu_bar : float,
         b_prior_sd=0.1,
-        gamma_prior_sd=0.1,
-        dtype=torch.float64,
+        gamma_prior_sd=1.0,
+        dtype=torch.float32,
     ):
         super().__init__()
 
-        self.n_features = n_features
-        self.n_disp_covariates = n_disp_covariates
+        self.n_covariates = n_covariates
 
         with torch.no_grad():
             a_init = disp_trend_prior.mean(
                 torch.as_tensor(mu_bar, dtype=dtype)
             )   
 
-        self.a = torch.nn.Parameter(a_init)
+        self.a = torch.nn.Parameter(torch.zeros(1, dtype=dtype))
         self.b = torch.nn.Parameter(
-            torch.zeros(n_features, dtype=dtype)
+            torch.zeros(1, dtype=dtype)
             )
 
-        if n_disp_covariates > 0:
+        if self.n_covariates > 0:
             self.gamma = torch.nn.Parameter(
-                torch.zeros(n_disp_covariates, dtype=dtype)
+                torch.zeros(self.n_covariates, dtype=dtype)
             )
         else:
             self.gamma = None
@@ -74,13 +72,14 @@ class MeanPowerCovariateDispersion(BaseDispersionModel):
 
     def forward(self, context: RegressionContext) -> torch.Tensor:
         log_mu = torch.log(context.mu)
-        log_phi = self.a.unsqueeze(0) + self.b.unsqueeze(0) * log_mu
+        log_phi = self.a + self.b * log_mu
 
         if self.gamma is not None:
             if context.W is None:
                 raise ValueError("W is required when n_disp_covariates > 0.")
+            assert self.n_covariates == context.W.shape[1]
 
-            log_phi = log_phi + context.W @ self.gamma.unsqueeze(-1)
+            log_phi = log_phi + context.W @ self.gamma
 
         return log_phi
 
