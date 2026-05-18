@@ -5,19 +5,15 @@ from nbsr.regression_context import RegressionContext
 from nbsr.distributions import log_negbinomial, log_normal, log_lognormal
 
 class LogDispersionTrendPrior(torch.nn.Module):
-    def __init__(self, intercept, slope, dtype=torch.float64):
+    def __init__(self, intercept, slope, disp_prior_var, dtype=torch.float32):
         super().__init__()
         self.register_buffer("a0", torch.as_tensor(intercept, dtype=dtype))
         self.register_buffer("a1", torch.as_tensor(slope, dtype=dtype))
-        # We will estimate the sd of the log dispersion trend from data. 
-        # We will represent it as kappa defined on the real line and map it to positive line using softplus.
-        self.kappa = torch.nn.Parameter(
-            torch.zeros(1, dtype=dtype)
-        )
+        self.register_buffer("disp_prior_var", torch.as_tensor(disp_prior_var, dtype=dtype))
 
     @property
     def sd(self):
-        return F.softplus(self.kappa)
+        return torch.sqrt(self.disp_prior_var)
 
     def mean(self, mu_bar):
         return torch.log(self.a1 / mu_bar + self.a0)
@@ -39,19 +35,19 @@ class MeanPowerCovariateDispersion(BaseDispersionModel):
         self,
         n_covariates,
         disp_trend_prior : LogDispersionTrendPrior,
-        mu_bar : float,
-        b_prior_sd=0.1,
-        gamma_prior_sd=1.0,
+        mu_bar : torch.tensor,
+        b_prior_sd : float = 0.1,
+        gamma_prior_sd : float =1.0,
         dtype=torch.float32,
     ):
         super().__init__()
 
         self.n_covariates = n_covariates
 
-        with torch.no_grad():
-            a_init = disp_trend_prior.mean(
-                torch.as_tensor(mu_bar, dtype=dtype)
-            )   
+        # with torch.no_grad():
+        #     a_init = disp_trend_prior.mean(
+        #         torch.as_tensor(mu_bar, dtype=dtype)
+        #     )   
 
         self.a = torch.nn.Parameter(torch.zeros(1, dtype=dtype))
         self.b = torch.nn.Parameter(
@@ -83,26 +79,15 @@ class MeanPowerCovariateDispersion(BaseDispersionModel):
 
         return log_phi
 
-    def log_prior(self):
-        lp = self.disp_trend_prior.log_density(
-            self.a,
-            self.mu_bar
-        ).sum()
-
-        lp += log_normal(
-            self.b,
-            torch.zeros_like(self.b),
-            self.b_prior_sd,
-        ).sum()
-
-        if self.gamma is not None:
-            lp += log_normal(
-                self.gamma,
-                torch.zeros_like(self.gamma),
-                self.gamma_prior_sd,
-            ).sum()
-
+    def compute_log_prior(self, a, b, mu_bar, gamma=None):
+        lp = self.disp_trend_prior.log_density(a, mu_bar).sum()
+        lp += log_normal(b, torch.zeros_like(b), self.b_prior_sd).sum()
+        if gamma is not None:
+            lp += log_normal(gamma, torch.zeros_like(gamma), self.gamma_prior_sd).sum()
         return lp
+
+    def log_prior(self):
+        return self.compute_log_prior(self.a, self.b, self.mu_bar, self.gamma)
 
 # Model for dispersion parameters of the NBSR.
 class DispersionModel(torch.nn.Module):
