@@ -51,152 +51,94 @@ def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
 		print(f"Not converged")
 		return False
 
-def compute_negative_hessian_log_posterior_torch(model, use_cuda_if_available=True):
-	print("Computing Hessian using torch...")
-	# Check if CUDA is available.
+def compute_negative_hessian_log_posterior(model, use_cuda_if_available=True):
+	"""Negative Hessian of the log posterior at the fitted beta, in closed form (see utils.kron_hessian).
+	Computed on the GPU when requested and available; always returned on the CPU in float64."""
 	if use_cuda_if_available:
 		print(f"CUDA available? {torch.cuda.is_available()}")
-		device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-		model.to_device(device)
-
-	log_post_grad = model.log_posterior_gradient(model.beta)
-	# dtype must be explicit: the module sets the default dtype to float32, which would truncate the float64 Hessian.
-	gradient_matrix = torch.zeros(log_post_grad.size(0), model.beta.size(0), device=model.beta.device, dtype=model.beta.dtype)
-	# Compute the gradient for each component of log_post_grad w.r.t. beta
-	for k in range(log_post_grad.size(0)):
-		# Zero previous gradient
-		if model.beta.grad is not None:
-			model.beta.grad.zero_()
-
-		# Backward on the k-th component of y
-		log_post_grad[k].backward(retain_graph=True)
-
-		# Store the gradient
-		gradient_matrix[k,:] = model.beta.grad
-
-	return -gradient_matrix
-
-def compute_negative_hessian_log_posterior(model, use_cuda_if_available=True):
+		model.to_device(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 	start = time.perf_counter()
-	I = compute_negative_hessian_log_posterior_torch(model, use_cuda_if_available)
-	end = time.perf_counter()
-	print("Hessian computation time = {}s".format((end - start)))
-	return I
+	with torch.no_grad():
+		I = -model.log_posterior_hessian(model.beta.detach())
+	print("Hessian computation time = {}s".format(time.perf_counter() - start))
+	return I.detach().cpu().double()
 
-def inference_logRR(model, var, w1, w0, x_map, I, cholesky=False):
-	
-	# Assume I is covariate major (j=0,d=0), ..., (j=model.dim,d=0), ..., (j=0,d=P), ..., (j=model.dim,d=P).
+def cholesky_with_jitter(I, max_jitter=1e-3):
+	"""Cholesky factor of a symmetric matrix that should be positive definite (a negative Hessian at a
+	mode). Roundoff or an unconverged fit can make it indefinite; a small ridge is added in decades up to
+	max_jitter before giving up."""
+	I = 0.5 * (I + I.T)
+	eye = torch.eye(I.shape[0], dtype=I.dtype, device=I.device)
+	eps = 0.0
+	while True:
+		L, info = torch.linalg.cholesky_ex(I + eps * eye)
+		if info == 0:
+			if eps > 0:
+				print(f"Negative Hessian needed a ridge of {eps:g} to be positive definite.")
+			return L
+		if eps >= max_jitter:
+			raise RuntimeError(f"Negative Hessian is not positive definite even with a ridge of {max_jitter:g}; "
+							   "the fit has probably not converged.")
+		eps = 1e-8 if eps == 0.0 else eps * 10.0
+
+def inference_logRR(model, var, w1, w0, x_map, I, return_cov=True):
+	"""Log relative-abundance ratio of level w1 over w0 of `var` for every sample and feature, with
+	delta-method standard errors from the negative Hessian I (covariate-major, index d*dim + k).
+
+	Each logRR_nj is a function g_nj(beta); its gradient a_nj (length dim*P) gives Var(logRR_nj) = a_nj' I^-1 a_nj.
+	With I = L L' this is ||L^-1 a_nj||^2, so all N*J variances come from one triangular solve. return_cov
+	also forms the (N, J, J) covariance of the logRR vector within each sample.
+	"""
 	assert I is not None
-
 	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
 	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
 	col_idx0 = x_map[var_level0] if var_level0 in x_map else None
 	col_idx1 = x_map[var_level1] if var_level1 in x_map else None
-	#print(col_idx0, col_idx1)
 
+	# Design rows with the levels of `var` set to w0 / w1 (all other covariates as observed).
 	Z0 = model.X.clone()
 	Z1 = model.X.clone()
-
-	# Zero out columns corresponding to var 
-	for i,colname in enumerate(x_map):
-		if var in colname: # Checks if var is a substring of colname.
-			Z0[:,i+1] = 0 # +1 to account for the intercept.
-			Z1[:,i+1] = 0
-
+	for colname, col_idx in x_map.items():
+		if var in colname:  # var is a substring of colname
+			Z0[:, col_idx + 1] = 0  # +1 to account for the intercept.
+			Z1[:, col_idx + 1] = 0
 	found = False
 	if col_idx0 is not None:
-		Z0[:,col_idx0+1] = 1
+		Z0[:, col_idx0 + 1] = 1
 		found = True
 	if col_idx1 is not None:
-		Z1[:,col_idx1+1] = 1
+		Z1[:, col_idx1 + 1] = 1
 		found = True
-	assert found == True
+	assert found, f"{var} not found among the covariates"
 	print(f"Found covariate {var} in the model.")
+
 	pi0, _ = model.predict(model.beta, Z0)
 	pi1, _ = model.predict(model.beta, Z1)
 	logRRi = torch.log(pi1) - torch.log(pi0)
 	log2RRi = torch.log2(pi1) - torch.log2(pi0)
 
 	N, J = pi0.shape
-	P    = model.covariate_count
-	d    = model.dim # J-1 if model.pivot; J otherwise.
-	se = torch.zeros((N, J), dtype=model.beta.dtype, device=model.beta.device)
+	P = model.covariate_count
+	d = model.dim  # J-1 if model.pivot; J otherwise.
 
-	# Find standard estimates for logRR.
-	A = torch.zeros((N,J,d*P), dtype=model.beta.dtype, device=model.beta.device)
+	# Gradient of logRR_nj w.r.t. beta_{k,d}: z_{1,d} (1[j=k] - pi1_k) - z_{0,d} (1[j=k] - pi0_k), k < dim.
+	identity = torch.eye(J, d, device=pi0.device, dtype=pi0.dtype).unsqueeze(0).expand(N, J, d)
+	ipi0 = identity - pi0[:, :d].unsqueeze(1)                                   # (N, J, d)
+	ipi1 = identity - pi1[:, :d].unsqueeze(1)
+	ret = ipi1.unsqueeze(3) * Z1.unsqueeze(1).unsqueeze(2) - ipi0.unsqueeze(3) * Z0.unsqueeze(1).unsqueeze(2)
+	ret = ret.transpose(2, 3).reshape(N, J, d * P)                                # covariate-major, matches I
+
+	I = I.to(device=ret.device, dtype=ret.dtype)
+	L = cholesky_with_jitter(I)
+	V = torch.linalg.solve_triangular(L, ret.reshape(N * J, d * P).T, upper=False)  # (dP, N*J) = L^-1 a
+	se = V.pow(2).sum(0).sqrt().reshape(N, J)
 	cov_mat = None
-	if cholesky:
-		print("Cholesky decomposition.")
-		I = 0.5*(I + I.T)
-		eye = torch.eye(I.size(0), device=I.device, dtype=I.dtype)
-		eps = 0.0
-		for k in range(6):
-			try:
-				L = torch.linalg.cholesky(I + eps*eye)
-				break
-			except RuntimeError:
-				print(f"Increasing jitter")
-				eps = 10.0**(-8 + k)     # 1e-8, 1e-7, ..., 1e-3
+	if return_cov:
+		Vn = V.T.reshape(N, J, d * P)
+		cov_mat = torch.bmm(Vn, Vn.transpose(1, 2))
 
-		for n in range(N):
-			x0 = Z0[n]
-			x1 = Z1[n]
-			dx = x1 - x0
-			# Note: the order of kron matters as we want covariate major.
-			# torch.kron(x1, pi1[n]) yields vector of length JP -> (x1[0] pi1, ..., x1[P] pi1).
-			# similarly for torch.kron(x0, pi0[n])
-			c = torch.kron(x1, pi1[n,:d]) - torch.kron(x0, pi0[n,:d]) 
-			for j in range(J):
-				# The entry in c corresponding to 1[j = k] should add dx = (x1 - x0).
-				a_j = -c.clone()
-				if not model.pivot or j < d:
-					a_j[j::model.dim] += dx
-				v_j = torch.cholesky_solve(a_j.unsqueeze(1), L).squeeze(1)
-				se[n,j] = (a_j * v_j).sum().sqrt()
-				A[n,j,:] = a_j
-	else:
-		print("Batched computation.")
-		#S = torch.linalg.pinv(I)
-		S = torch.linalg.inv(I)
-		# The gradient of g_j wrt (k,d) is expressed by 
-		# z_{1,d} (1[j = k] - \pi_{k|w_1}) - z_{0,d} (1[j = k] - \pi_{k|w_0}).
-		# We will construct two tensors ipi1 and ipi0 of size (N, J, J) where N is the sample count, K is the number of features.
-		# ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}) and ipi0[n,j,k] = (1[j = k] - \pi_{k|z_{0,n}}).
-		# one exception is that if pivot is used, the entry ipi1[n,J,k] = 0 - pi_{k|z_{1,n}}  (likewise for ipi0).
-		#identity = torch.tile(torch.eye(J, d, device=pi0.device), (model.sample_count, 1, 1)) # (N, J, J-1)
-		base_identity = torch.eye(J, d, device=pi0.device)
-		# Create a memory-efficient view of shape (N, J, d) without copying data
-		identity = base_identity.unsqueeze(0).expand(N, J, d)
-
-		# Use broadcasting to compute the difference between the identity matrix and pi1, pi0.
-		# identity is a tensor of size (N, J, d), subtracting pi1 of size (N, J), we need to unsqueeze pi1 along the last dimension to get (N, J, 1).
-		# Then, broadcasting will essentially make a copy of pi1 along the last dimension to get (N, J, J) where the entries along the last dimension are all the same.
-		# That is ipi1[n,j,k] = (1[j = k] - \pi_{k|z_{1,n}}) where k = 1, ..., d.
-		# The last row J is just \pi_{k|z_{1,n}} for k = 1, ..., d.
-		ipi0 = (identity - pi0[:, :d].unsqueeze(1)) # (N, J, d) - (N, 1, d)
-		ipi1 = (identity - pi1[:, :d].unsqueeze(1))
-
-		# We will take the product of ipi1 and ipi0 with Z1 and Z0, respectively.
-		# The result will be a tensor of size (N, J, d*P).
-		# ipi0 has dimension (N, J, d) while Z0 has dimension (N, P).
-		# We want the results to be ret0[n,j,k,d] = ipi0[n,j,k] * Z0[n,d].
-		# Again, we will use broadcating. 
-		# First, expand Z0 to have dimension (N, 1, 1, P).
-		# Expand ipi0 to have dimension (N, J, d, 1).
-		ret0 = ipi0.unsqueeze(3) * Z0.unsqueeze(1).unsqueeze(2)
-		ret1 = ipi1.unsqueeze(3) * Z1.unsqueeze(1).unsqueeze(2)
-		ret = ret1 - ret0
-		# PyTorch uses row-major (C-style) flattening, meaning it flattens the last dimension fastest.
-		# Since I is covariate-major (feature changes fastest), we need to transpose.
-		ret = ret.transpose(2, 3).reshape(N, J, d * P)
-
-		S_batch = S.unsqueeze(0).expand(model.sample_count, -1, -1)
-		cov_mat = torch.bmm(torch.bmm(ret, S_batch), ret.transpose(1, 2))
-		se.copy_(torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)))
-
-	logFC = logRRi.data.numpy()
-	log2FC = log2RRi.data.numpy()
-	return (logFC, log2FC, se.data.numpy(), cov_mat)
+	return (logRRi.detach().cpu().numpy(), log2RRi.detach().cpu().numpy(), se.detach().cpu().numpy(),
+			cov_mat.detach().cpu() if cov_mat is not None else None)
 
 def fit_posterior(model, optimizer, iterations):
 	# Fit the model.
@@ -362,7 +304,7 @@ def _safe_name(x):
     """Convert arbitrary string to filesystem-safe name."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))
 
-def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False, cholesky=False):
+def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False, save_cov=True):
 	results_path = Path(results_path)
 	
 	comparison_name = f"{_safe_name(var)}__{_safe_name(w1)}_vs_{_safe_name(w0)}"
@@ -389,7 +331,7 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 		I = compute_negative_hessian_log_posterior(model, config.use_cuda_if_available).detach().cpu()
 		np.save(results_path / hessian_filename, I)
 
-	logRR, log2RR, logRR_std, cov_mat  = inference_logRR(model, var, w1, w0, x_map, I, cholesky)
+	logRR, log2RR, logRR_std, cov_mat = inference_logRR(model, var, w1, w0, x_map, I, return_cov=save_cov)
 	#logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 
 	# Compute the test statistic and the p-values.
@@ -414,7 +356,6 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 	# Fifth column is the adjusted p-value.
 	padj = np.array(list(map(lambda x: ss.false_discovery_control(x, method="bh"), pvalue)))
 
-	# Save covariance matrix (None when the Cholesky path is used, which only computes the diagonal).
 	if cov_mat is not None:
 		torch.save(cov_mat, comparison_path / covariance_path)
 
@@ -619,9 +560,9 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 @click.argument('w0', type=str) # "level to be used on the denominator"
 @click.option('--absolute_fc', default=False, is_flag=True, type=bool)
 @click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
-@click.option('--cholesky', is_flag=True, show_default=True, default=False, type=bool)
-def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, cholesky):
-	generate_results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, cholesky)
+@click.option('--skip_cov', is_flag=True, show_default=True, default=False, type=bool, help="Do not compute/save the per-sample covariance of logRR across features.")
+def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, skip_cov):
+	generate_results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, save_cov=not skip_cov)
 
 
 cli.add_command(eb)

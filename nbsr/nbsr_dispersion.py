@@ -1,11 +1,8 @@
 import torch
 
-import numpy as np
-from scipy.special import digamma, polygamma
-
 from nbsr.distributions import log_negbinomial, log_invgamma
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
-from nbsr.utils import hessian_trended_nbsr
+from nbsr.utils import kron_hessian
 
 # This model extends the basic NBSR model with trended dispersion given by disp_model.forward(pi).
 class NBSRTrended(NegativeBinomialRegressionModel):
@@ -111,33 +108,31 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         return log_lik_grad + log_prior_grad
 
     def log_likelihood_hessian(self, beta):
+        """Closed-form Hessian of the log-likelihood w.r.t. the flat beta (covariate-major), on beta's device.
+
+        log phi_ij = b0 + b1 log pi_ij + ..., so the dispersion moves with beta through pi; the b1 terms below
+        are that dependence (b1 = 0 recovers the fixed-dispersion NBSR Hessian).
+        """
         pi = self.predict(beta, self.X)[0].detach()
-        phi = torch.exp(self.disp_model.forward(pi)).detach()  # detach: scipy digamma/polygamma below need plain tensors.
-        mu = self.s[:,None] * pi
-        var = mu + phi * (mu ** 2)
+        phi = torch.exp(self.disp_model.forward(pi)).detach()
+        Y = self.Y.to(pi.dtype)
+        mu = self.s[:, None].to(pi.dtype) * pi
+        var = mu + phi * mu ** 2
         r = 1.0 / phi
         p = mu / var
-
-        b1 = self.disp_model.b1[0].detach().numpy()
-        Y_np = self.Y.numpy()
-        r_np = r.numpy()
-        p_np = p.numpy()
-        aa = digamma(Y_np + r_np) - digamma(r_np) + np.log(p_np)
-        cc = polygamma(1, Y_np + r_np) - polygamma(1, r_np)
-
-        return hessian_trended_nbsr(self.X.numpy(), 
-                                    Y_np, 
-                                    pi.numpy(), 
-                                    p_np,
-                                    r_np,
-                                    aa, 
-                                    cc, 
-                                    b1,
-                                    self.pivot)
+        b1 = self.disp_model.b1.detach().reshape(())
+        a = torch.special.digamma(Y + r) - torch.special.digamma(r) + torch.log(p)
+        c = torch.special.polygamma(1, Y + r) - torch.special.polygamma(1, r)
+        one_b1 = 1.0 + b1
+        B = r * (1.0 - p) * one_b1 - Y * p * one_b1 + r * b1 * a
+        A = (r * (1.0 - p) * one_b1 * (b1 - p * one_b1)
+             - Y * p * one_b1 ** 2 * (1.0 - p)
+             + r * b1 * (a * b1 + r * b1 * c + (1.0 - p) * one_b1))
+        return kron_hessian(self.X, pi, A, B, dim=self.dim)
 
     def log_posterior_hessian(self, beta):
+        H_lik = self.log_likelihood_hessian(beta)
         # Flat beta is covariate-major (index d*dim + k), so covariate d's sd repeats dim times consecutively.
-        sd = self.softplus(self.psi).repeat_interleave(self.dim)
-        H_lik = torch.as_tensor(self.log_likelihood_hessian(beta), dtype=torch.float64)
+        sd = self.softplus(self.psi.detach()).repeat_interleave(self.dim).to(H_lik.dtype)
         # log N(beta; 0, sd/lam) has Hessian -lam^2/sd^2 on the diagonal.
-        return H_lik - (self.lam**2 / sd**2) * torch.eye(self.dim * self.covariate_count, dtype=torch.float64)
+        return H_lik - torch.diag(self.lam ** 2 / sd ** 2)

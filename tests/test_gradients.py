@@ -8,6 +8,7 @@ import nbsr.negbinomial_model as nbm
 import nbsr.nbsr_dispersion as nbsrd
 import nbsr.dispersion as dm
 import nbsr.utils as utils
+from tests import reference_hessians
 
 def setup_module(module):
     print("Testing gradients and Hessian computation.")
@@ -222,7 +223,7 @@ class TestNBSRGradients(unittest.TestCase):
         s = np.sum(model.Y.data.numpy(), 1)
         mu = s[:,None] * pi
         start = time.perf_counter()
-        hess_realized = utils.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
+        hess_realized = reference_hessians.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
         end = time.perf_counter()
         print("Elapsed with numba compilation = {}s".format((end - start)))
         #print(hess_realized[0,:])
