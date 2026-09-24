@@ -15,7 +15,11 @@ class FeaturewiseNegBinom(nn.Module):
         log phi_ij = dispersion_model(W, pi, size_factors)
     """
 
-    def __init__(self, n_covariates, dispersion_model, beta_init_sd=1.0, dtype=torch.float32):
+    def __init__(self, n_covariates, dispersion_model, beta_prior_sd=5.0, dtype=torch.float32):
+        """
+        beta_prior_sd: scalar or length-n_covariates vector of prior sds for beta ~ N(0, sd^2).
+            A vector lets each covariate carry its own sd (e.g. an effectively flat prior on the intercept).
+        """
         super().__init__()
 
         self.n_covariates = n_covariates
@@ -26,7 +30,12 @@ class FeaturewiseNegBinom(nn.Module):
 
         self.dispersion_model = dispersion_model
 
-        self.register_buffer("beta_prior_sd", torch.as_tensor(beta_init_sd, dtype=dtype))
+        beta_prior_sd = torch.as_tensor(beta_prior_sd, dtype=dtype)
+        if beta_prior_sd.ndim == 0:
+            beta_prior_sd = beta_prior_sd.expand(self.n_covariates)
+        assert beta_prior_sd.shape == (self.n_covariates,), \
+            f"beta_prior_sd must be a scalar or have shape ({self.n_covariates},), got {tuple(beta_prior_sd.shape)}"
+        self.register_buffer("beta_prior_sd", beta_prior_sd.clone())
 
     def mean_model(self, beta, X, sf):
         """

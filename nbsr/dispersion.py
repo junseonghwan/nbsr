@@ -44,12 +44,11 @@ class MeanPowerCovariateDispersion(BaseDispersionModel):
 
         self.n_covariates = n_covariates
 
-        # with torch.no_grad():
-        #     a_init = disp_trend_prior.mean(
-        #         torch.as_tensor(mu_bar, dtype=dtype)
-        #     )   
+        # Start the dispersion intercept at the DESeq2 trend prior mean for this gene.
+        with torch.no_grad():
+            a_init = disp_trend_prior.mean(torch.as_tensor(mu_bar, dtype=dtype)).reshape(1)
 
-        self.a = torch.nn.Parameter(torch.zeros(1, dtype=dtype))
+        self.a = torch.nn.Parameter(a_init.clone().to(dtype))
         self.b = torch.nn.Parameter(
             torch.zeros(1, dtype=dtype)
             )

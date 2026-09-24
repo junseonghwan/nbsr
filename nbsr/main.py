@@ -21,6 +21,7 @@ from nbsr.nbsr_config import NBSRConfig
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.nbsr_dispersion import NBSRTrended
 from nbsr.dispersion import DispersionModel, LogDispersionTrendPrior, MeanPowerCovariateDispersion
+from nbsr.dataset import Dataset
 from nbsr.featurewise_nb_model import FeaturewiseNegBinom
 from nbsr.utils import *
 
@@ -716,80 +717,9 @@ def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, choles
 	# cov_mat is NxKxK tensor. 
 	# np.save(os.path.join(output_path, "nbsr_logRR_cov.npy"), cov_mat.data.numpy())
 
-@click.command()
-@click.argument('data_path', type=click.Path(exists=True))
-@click.argument('vars', nargs=-1)
-@click.option('-i', '--iter', default=20000, type=int, help="Number of optimization iterations.")
-@click.option('-z', '--z_columns', default="", help="Covariate names for dispersion model split by comma.")
-@click.option('--b_prior_sd', default=0.1, type=float, help="Prior SD for b_j.")
-def fnb(
-    data_path,
-    vars,
-    iter,
-    z_columns,
-    b_prior_sd
-):	
-	data_path = Path(data_path)
-	outpath = data_path / "fnb_run"
-	outpath.mkdir(parents=True, exist_ok=True)
-
-	z_columns = z_columns.split(",") if z_columns else []
-
-	# Load data
-	# Assume Y.csv has samples as columns and features as rows, and X.csv has samples as rows and covariates as columns.
-	Y_df = pd.read_csv(data_path / "Y.csv", index_col=0).transpose()
-	X_df = pd.read_csv(data_path / "X.csv", index_col="sample_name")
-
-	mean_model_formula = " + ".join(vars) if vars else "1"
-	# Adding 0 will remove the intercept and the factor variables will become one-hot encoded.
-	disp_model_formula = " + ".join(z_columns) if z_columns else None
-
-	Y_torch = torch.tensor(Y_df.values, dtype=torch_dtype)
-	X_torch = torch.tensor(patsy.dmatrix(mean_model_formula, data=X_df, return_type='dataframe').values, dtype=torch_dtype)
-	if len(z_columns) > 0:
-		W_torch = torch.tensor(patsy.dmatrix(disp_model_formula, data=X_df, return_type='dataframe').values, dtype=torch_dtype)
-		W_torch = W_torch[:, 1:] # remove intercept from dispersion covariates.
-	else:
-		W_torch = None
-
-	n_genes = Y_torch.shape[1]
-	n_mean_covariates = X_torch.shape[1]
-	n_disp_covariates = W_torch.shape[1] if W_torch is not None else 0
-
-	# Run PyDESeq2 to obtain dispersion trend estimates and initial mean estimates.
-	inference = DefaultInference(n_cpus=4)
-	dds = DeseqDataSet(
-		counts=Y_df,
-		metadata=X_df,
-		design=mean_model_formula,
-		refit_cooks=True,
-		inference=inference,
-	)
-	dds.fit_size_factors()
-	dds.fit_genewise_dispersions()
-	dds.fit_dispersion_trend()
-	dds.fit_dispersion_prior()
-	dds.fit_MAP_dispersions()
-	a0, a1 = dds.uns["trend_coeffs"]
-	disp_prior_var = dds.uns['prior_disp_var']
-	print(f"DESeq2 dispersion trend coefficients: a0={a0}, a1={a1}, prior variance={disp_prior_var}")
-
-	# Compute mu_bar
-	sf = torch.tensor(dds.obs["size_factors"])
-	normalized_cts = Y_torch / sf.unsqueeze(-1)
-	mu_bar = torch.mean(normalized_cts, dim=0).numpy()
-	disp_trend_prior = LogDispersionTrendPrior(a0, a1, disp_prior_var)
-	print(mu_bar.shape)
-
-	
-
-	checkpoint_path = outpath / "fnb_results.pt"
-	torch.save(results, checkpoint_path)
-	print(f"Saved results to {checkpoint_path}")
 
 cli.add_command(eb)
 cli.add_command(train)
-cli.add_command(fnb)
 cli.add_command(results)
 
 if __name__ == '__main__':
