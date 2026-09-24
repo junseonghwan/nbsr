@@ -20,9 +20,7 @@ from pydeseq2.default_inference import DefaultInference
 from nbsr.nbsr_config import NBSRConfig
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.nbsr_dispersion import NBSRTrended
-from nbsr.dispersion import DispersionModel, LogDispersionTrendPrior, MeanPowerCovariateDispersion
-from nbsr.dataset import Dataset
-from nbsr.featurewise_nb_model import FeaturewiseNegBinom
+from nbsr.dispersion import DispersionModel
 from nbsr.utils import *
 
 torch.set_default_dtype(torch.float32)
