@@ -69,67 +69,6 @@ def hessian_trended_nbsr(X, Y, pi, p, r, aa, cc, b_1, pivot=True):
     return H
 
 # @njit(cache=True) 
-def log_lik_gradients2(X, Y, pi, mu, phi, pivot=True):
-    N, P = X.shape
-    J    = Y.shape[1]
-    dim = J - 1 if pivot else J
-    JP   = dim * P
-
-    # allocate outputs -- grad will be returned as 3d-matrix (J, J, P) with the axis=0 to be collapsed.
-    # g[d,j,k] = \nabla_{k,d}
-    g = np.zeros((J, J, P), dtype=np.float64)
-    H = np.zeros((JP, JP), dtype=np.float64)
-    #H = np.zeros((J, JP, JP), dtype=np.float64)
-    
-    # reciprocal dispersions
-    r = 1.0 / phi
-    var = mu + phi * (mu ** 2)
-    D   = phi * (mu ** 2) / var
-
-    I = np.eye(J)
-
-    # loop #1: over samples i
-    for i in range(N):
-        x_i   = X[i]     # (P,)
-        y_i   = Y[i]     # (J,)
-        pi_i = pi[i]    # (J,)
-        D_i = D[i]
-
-        w1 = r * D_i
-        w2 = y_i * (1.0 - D_i)
-        grad_w = (w1 - w2)
-        hess_w = w1 * (1.0 - D_i) + w2 * D_i
-
-        # accumulate gradient g
-        delta_j_k = I - pi_i[:,None].T # delta_j_k[j,k] = 1[j = k] - pi_i[k]
-        ret = (-grad_w[:, None, None]         # shape (J,1,1)
-                * delta_j_k[:, :, None]         # shape (J,J,1)
-                * x_i[None, None, :]            # shape (1,1,P)
-                ) # shape (J, J, P)
-        g += ret
-
-        # accumulate hessian H.
-        for dim1 in range(JP):
-            k, d = divmod(dim1, P)
-            idx_k = d * dim + k
-            for dim2 in range(JP):
-                kp, dp = divmod(dim2, P)
-                idx_kp = dp * dim + kp
-                delta_k_kp = (1.0 if k == kp  else 0) - pi_i[kp]
-                
-                # This is slower than doing a loop over j.
-                #H[:, idx_k, idx_kp] += (grad_w * (x_i[d] * x_i[dp]) * pi_i[k] * delta_k_kp - hess_w * (x_i[d] * x_i[dp]) * delta_j_k[:,k] * delta_j_k[:,kp])
-
-                t1 = 0.0
-                t2 = 0.0
-                for j in range(J):
-                    t1 += grad_w[j] * pi_i[k] * delta_k_kp
-                    t2 += hess_w[j] * delta_j_k[j,k] * delta_j_k[j,kp]
-
-                H[idx_k, idx_kp] += (t1 - t2) * x_i[d] * x_i[dp]
-    return (g, H)
-
-# @njit(cache=True) 
 def hessian_nbsr(X, Y, pi, mu, phi, pivot=True):
     N, P = X.shape
     J    = Y.shape[1]
@@ -206,26 +145,6 @@ def construct_tensor_from_coldata(coldata_pd, column_names, sample_count, includ
         variable_map[column] = idx
     return (X_tensor, variable_map)
 
-def torch_rbf(x, a, b, c):
-    # Ensuring x is a tensor
-    if not torch.is_tensor(x):
-        x = torch.tensor(x, dtype=torch.float32)
-
-    # Reshape x to have three dimensions if it's not already
-    if x.dim() == 1:
-        x = x.unsqueeze(1)  # For a vector, make it N x 1
-    x = x.unsqueeze(-1)  # Add an extra dimension for broadcasting: N x K x 1
-
-    # a and c are vectors of length M. Reshape for broadcasting
-    a = a.reshape(1, 1, -1)  # 1 x 1 x M
-    c = c.reshape(1, 1, -1)  # 1 x 1 x M
-
-    # Perform the operation
-    # Broadcasting will align dimensions automatically
-    result = torch.sum(a * torch.exp(-b * (x - c)**2), dim=-1)  # Sum over the last dimension
-
-    return result
-
 def read_file_if_exists(file_path):
     if file_path is None:
         return None
@@ -236,9 +155,6 @@ def read_file_if_exists(file_path):
 def create_directory(path):
     if not os.path.exists(path):
     	os.makedirs(path)
-
-def softplus_np(x):
-    return np.log1p(np.exp(x))
 
 def reshape(model, params):
     return(params.reshape((model.X.shape[1], model.dim)))

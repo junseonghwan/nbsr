@@ -82,88 +82,6 @@ def compute_negative_hessian_log_posterior(model, use_cuda_if_available=True):
 	print("Hessian computation time = {}s".format((end - start)))
 	return I
 
-def inference_beta(model, var, w1, w0, x_map, I):
-	"""
-	Compute inference statistics for contrasting two levels for a given variable of interest.
-	Note: w0 corresponds to the denominator in the log ratio while w1 corresponds to the numerator.
-
-	Parameters
-	----------
-	model : NegativeBinomialRegressionModel object with the following attributes:
-		- `X_df`: a pandas DataFrame with the design matrix.
-		- `Y_df`: a pandas DataFrame with the response variable.
-	var : str
-		The name of the variable of interest.
-	w1 : str
-		The name of the numerator level for the fold change.
-	w0 : str
-		The name of the denominator level for the fold change.
-	x_map: dict
-		The dictionary containing map from var_w1/var_w0 to column index for the design matrix.
-
-	Returns
-	-------
-	res : pandas DataFrame
-		A DataFrame with the following columns:
-		- `features`: the names of the features in the model.
-		- `beta`: the natural logarithm fold change between the two levels of the variable.
-		- `stdErr`: the standard error of the log2 fold change.
-		- `z-score`: the z-score.
-		- `pValue`: the p-value.
-		- `adjPValue`: the Benjamini-Hochberg adjusted p-value.
-	"""
-	# Compute negative hessian matrix.
-	# Compute (pseudo) inverse of negative hessian matrix to get covariance matrix.
-	# Compute standard errors.
-	assert I is not None
-
-	S = torch.linalg.pinv(I)
-
-	std_err_reshaped = reshape(model, torch.sqrt(torch.diag(S))).data.numpy()
-	beta_reshaped = get_beta(model).data.numpy()
-
-	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
-	var_level1 = "{varname}_{levelname}".format(varname=var, levelname=w1)
-	col_idx0 = x_map[var_level0] if var_level0 in x_map else None
-	col_idx1 = x_map[var_level1] if var_level1 in x_map else None
-	found = False
-	if col_idx0 is not None:
-		# Offset by 1 because the first column is the intercept.
-		beta0 = beta_reshaped[1+col_idx0,:]
-		std_err0 = std_err_reshaped[1+col_idx0,:]
-		found = True
-	else:
-		beta0 = 0
-		std_err0 = 0
-	if col_idx1 is not None:
-		beta1 = beta_reshaped[1+col_idx1,:]
-		std_err1 = std_err_reshaped[1+col_idx1,:]
-		found = True
-	else:
-		beta1 = 0
-		std_err1 = 0
-	if not found:
-		raise ValueError("Error: {level0}, {level1} not found in {varname}.".format(level0=w0, level1=w1, varname=var))
-
-	diff = (beta1 - beta0)
-	std_err = (std_err0**2) + (std_err1**2)
-
-	# Create a data frame with the results.
-	res = pd.DataFrame()
-	# First column is the variable name.
-	#res["features"] = model.Y_df.index.to_list()
-	# Second column is the log2 fold change.
-	res["diff"] = diff
-	# Third column is the standard error.
-	res["stdErr"] = std_err
-	# Fourth column is the z-score.
-	res["stat"] = diff / std_err
-	# Fifth column is the p-value.
-	res["pvalue"] = 2 * scipy.stats.norm.cdf(-np.abs(res["stat"]))
-	# Sixth column is the Benjamini-Hochberg adjusted p-value.
-	#res["adjPValue"] = false_discovery_control(res["pvalue"], method="bh")
-	return res
-
 def inference_logRR(model, var, w1, w0, x_map, I, cholesky=False):
 	
 	# Assume I is covariate major (j=0,d=0), ..., (j=model.dim,d=0), ..., (j=0,d=P), ..., (j=model.dim,d=P).
@@ -703,17 +621,6 @@ def train(data_path, vars, iterations, lr, runs, z_columns, lam, shape, scale, d
 @click.option('--cholesky', is_flag=True, show_default=True, default=False, type=bool)
 def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, cholesky):
 	generate_results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, cholesky)
-
-	# res_beta = inference_beta(model, var, w1, w0, config["x_map"], I)
-	# res_beta.to_csv(os.path.join(checkpoint_path, "coefficients.csv"), index=False)
-
-	# Save Hessian for future use.
-	# if save_hessian:
-	# 	np.savetxt(os.path.join(checkpoint_path, "hessian.csv"), I, delimiter=',')
-	# np.savetxt(os.path.join(output_path, "nbsr_logRR.csv"), logRR, delimiter=',')
-	# np.savetxt(os.path.join(output_path, "nbsr_logRR_sd.csv"), logRR_std, delimiter=',')
-	# cov_mat is NxKxK tensor. 
-	# np.save(os.path.join(output_path, "nbsr_logRR_cov.npy"), cov_mat.data.numpy())
 
 
 cli.add_command(eb)
