@@ -1,7 +1,7 @@
 import torch
 
 from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
-from nbsr.utils import hessian_nbsr
+from nbsr.utils import kron_hessian
 
 # This model implements free to vary dispersion parameterization.
 class NegativeBinomialRegressionModel(torch.nn.Module):
@@ -75,7 +75,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         return(log_lik)
 
     def log_beta_prior(self, beta):
-        beta_ = beta.reshape(self.dim, self.covariate_count)
+        # Flat beta is covariate-major (see log_likelihood: X @ beta.reshape(covariate_count, dim)).
+        # Transpose so that column d holds covariate d and broadcasts against sd[d].
+        beta_ = beta.reshape(self.covariate_count, self.dim).T
         sd = self.softplus(self.psi)
         log_prior1 = torch.sum(log_normal(beta_, torch.zeros_like(sd), sd/self.lam))
         return(log_prior1)
@@ -170,42 +172,44 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         Returns:
             torch.Tensor: A tensor of shape (sample_count, covariate_count * dim) containing the gradient of the log-likelihood function with respect to the model parameters for each sample.
         """        
-        beta_ = beta.view(self.covariate_count, self.dim)
-        dispersion = self.softplus(self.phi)
-        N, J, P = self.sample_count, self.rna_count, self.covariate_count
-        log_unnorm_exp = torch.matmul(self.X, beta_)
-        if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
-        norm = torch.logsumexp(log_unnorm_exp, 1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        I = torch.eye(J, device = beta.device)
+        device = beta.device
+        dtype  = beta.dtype
 
-        grad = torch.zeros(self.sample_count, self.dim * self.covariate_count, device=beta.device)
-        #for idx, (pi, x, y) in enumerate(zip(norm_expr, self.X, self.Y)):
+        N, J, P = self.sample_count, self.rna_count, self.covariate_count
+        dim = self.dim
+
+        beta_ = beta.view(P, dim)
+        dispersion = self.softplus(self.phi)
+        r = 1. / dispersion
+        grad = torch.empty(N, P * dim, device=device, dtype=dtype)
+        
         for n in range(N):
             x = self.X[n]
             y = self.Y[n]
-            pi = norm_expr[n]
             s = torch.sum(y)
-            
+
+            logits = x @ beta_
+            if self.pivot:
+                # append baseline (zero) column for softmax over J classes
+                logits = torch.cat([logits, torch.zeros(1, device=device, dtype=dtype)], dim=0)
+            m  = torch.logsumexp(logits, dim=0)
+            pi = torch.exp(logits - m)    # (J,)
+
             mean = s * pi
             sigma2 = mean + dispersion * (mean ** 2)
-            r = 1. / dispersion
 
-            A = (I - pi.expand(J, J)).t() 
-            temp0 = (mean + 2 * dispersion * (mean ** 2))/sigma2
-            temp1 = 1 - temp0
-            temp2 = 2 - temp0
-            temp = (r * temp1 + y * temp2)
-            
-            # ret1 = x.repeat((J, 1)).transpose(0,1) * temp
-            # ret2 = ret1.unsqueeze(1).repeat(1, J, 1)
-            # ret3 = ret2 * A
-            ret1 = torch.outer(x, temp)
-            ret3 = ret1[:, None, :] * A
-            res = ret3.sum(dim=2)
+            t0   = (mean + 2 * dispersion * (mean ** 2)) / sigma2
+            temp = r * (1.0 - t0) + y * (2.0 - t0)     # (J,)
+
+            # res = outer(x, temp) - [sum_j temp_j] * outer(x, pi)
+            # (rank-1 correction: (I - pi 1^T) applied without J×J)
+            xt  = torch.outer(x, temp)                  # (P, J)
+            res = xt - torch.outer(x, pi) * temp.sum()  # (P, J)
+
+            # Drop the pivot column to match parameter dimension when pivoting
             if self.pivot:
-                res = res[:, :-1]
+                res = res[:, :-1]                       # (P, dim) with dim = J-1
+
             grad[n] = res.reshape(-1)
         return grad
 
@@ -222,10 +226,13 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         return torch.sum(self.log_lik_gradient_persample(beta), 0)
 
     def log_beta_prior_gradient(self, beta):
-        beta_ = beta.reshape(self.dim, self.covariate_count)
+        # Flat beta is covariate-major (see log_likelihood: X @ beta.reshape(covariate_count, dim)).
+        # Transpose so that column d holds covariate d and broadcasts against sd[d].
+        beta_ = beta.reshape(self.covariate_count, self.dim).T
         sd = self.softplus(self.psi)
         log_prior_grad = -(self.lam**2) * beta_ / sd**2
-        return(log_prior_grad.flatten())
+        # beta_ is (dim, covariate_count); transpose back so the flat gradient is covariate-major like beta.
+        return(log_prior_grad.T.flatten())
 
     def log_posterior_gradient(self, beta):
         """
@@ -242,66 +249,21 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         log_lik_grad = self.log_lik_gradient(beta)
         return log_lik_grad + log_prior_grad
 
-    def log_lik_hessian_persample(self, beta):
-        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-        dispersion = self.softplus(self.phi)
-        J = self.dim
-        P = self.covariate_count
-        log_unnorm_exp = torch.matmul(self.X, beta_)
-        if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
-        norm = torch.logsumexp(log_unnorm_exp, 1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        total_dim = J*P
-        r = 1 / dispersion
-
-        hessian = torch.zeros(self.sample_count, total_dim, total_dim)
-        for idx, (pi, x, y) in enumerate(zip(norm_expr, self.X, self.Y)):
-            s = torch.sum(y)
-            mean = s * pi
-            sigma2 = mean + dispersion * (mean ** 2)
-            Di = dispersion * (mean ** 2) / sigma2
-
-            rD = r * Di
-            yD = y * (1-Di)
-            rDD = r * Di * (1-Di)
-            yDD = y * Di * (1-Di)
-
-            A = pi.repeat((J, 1))
-            B = torch.eye(J) - A
-
-            AA = A.unsqueeze(2) * x
-            BB = B.unsqueeze(2) * x
-            prod1 = torch.einsum('jkd,kle->jkdle', AA, BB)
-            prod1 = prod1.transpose(3, 4).transpose(1, 2)
-            prod1 = prod1.reshape(J, J*P, J*P)
-
-            prod2 = torch.einsum('jkd,jle->jkdle', BB, BB)
-            prod2 = prod2.transpose(3, 4).transpose(1, 2)
-            prod2 = prod2.reshape(J, J*P, J*P)
-
-            C1_ = torch.einsum('j,jkl->jkl', (rD - yD), prod1)
-            C2_ = torch.einsum('j,jkl->jkl', -(rDD + yDD) , prod2)
-
-            hessian[idx,:,:] = torch.sum(C1_ + C2_, 0)
-        return hessian
-
     def log_likelihood_hessian(self, beta):
+        """Closed-form Hessian of the log-likelihood w.r.t. the flat beta (covariate-major), on beta's device."""
         pi = self.predict(beta, self.X)[0].detach()
         phi = self.softplus(self.phi.detach())
-        mu = self.s[:,None] * pi
-        return hessian_nbsr(self.X.numpy(), 
-                            self.Y.numpy(), 
-                            pi.numpy(), 
-                            mu.numpy(), 
-                            phi.numpy(), 
-                            self.pivot)
+        Y = self.Y.to(pi.dtype)
+        mu = self.s[:, None].to(pi.dtype) * pi
+        D = phi * mu ** 2 / (mu + phi * mu ** 2)
+        r = 1.0 / phi
+        grad_w = r * D - Y * (1.0 - D)
+        hess_w = r * D * (1.0 - D) + Y * (1.0 - D) * D
+        return kron_hessian(self.X, pi, A=-hess_w, B=grad_w, dim=self.dim)
 
     def log_posterior_hessian(self, beta):
-        sd = self.softplus(self.psi).repeat(self.dim)
-        return self.log_likelihood_hessian(beta) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
-
-    # def log_posterior_hessian(self, beta):
-    #     sd = self.softplus(self.psi).repeat(self.dim)
-    #     return torch.sum(self.log_lik_hessian_persample(beta), 0) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
-
+        H_lik = self.log_likelihood_hessian(beta)
+        # Flat beta is covariate-major (index d*dim + k), so covariate d's sd repeats dim times consecutively.
+        sd = self.softplus(self.psi.detach()).repeat_interleave(self.dim).to(H_lik.dtype)
+        # log N(beta; 0, sd/lam) has Hessian -lam^2/sd^2 on the diagonal.
+        return H_lik - torch.diag(self.lam ** 2 / sd ** 2)
