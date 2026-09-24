@@ -184,3 +184,19 @@ def test_robust_results(dataset):
     # Same point estimates, different standard errors.
     np.testing.assert_allclose(robust.loc[ok, "estimate"], model_based.loc[ok, "estimate"])
     assert not np.allclose(robust.loc[ok, "se"], model_based.loc[ok, "se"])
+
+
+def test_batched_reference_hessian_matches_per_gene(dataset_with_disp_covariate):
+    """vmap(hessian(...)) is the reference the closed forms are tested against, so it must itself agree with
+    unbatched per-gene hessians. (torch.func's batched second derivatives are wrong for some ops, e.g. logdet,
+    so this guards the reference implementation.)"""
+    ds = dataset_with_disp_covariate
+    stats = FeaturewiseNBStats(ds, b_prior_sd=0.5)
+    Y, X, W, sf, mu_bar = stats._tensors()
+    YT = Y.T.contiguous()
+    log_post = stats._make_log_posterior_fn(stats._build_model(mu_bar[0]))
+    theta = stats._initial_params(Y, X, sf, mu_bar)
+    H_batched = vmap(hessian(log_post), in_dims=IN_DIMS)(theta, YT, mu_bar, X, W, sf)
+    for g in [0, 1, N_FEATURES - 1]:
+        H_single = hessian(log_post)(theta[g], YT[g], mu_bar[g], X, W, sf)
+        torch.testing.assert_close(H_batched[g], H_single, rtol=1e-10, atol=1e-8)
