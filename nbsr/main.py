@@ -60,7 +60,8 @@ def compute_negative_hessian_log_posterior_torch(model, use_cuda_if_available=Tr
 		model.to_device(device)
 
 	log_post_grad = model.log_posterior_gradient(model.beta)
-	gradient_matrix = torch.zeros(log_post_grad.size(0), model.beta.size(0), device=model.beta.device)
+	# dtype must be explicit: the module sets the default dtype to float32, which would truncate the float64 Hessian.
+	gradient_matrix = torch.zeros(log_post_grad.size(0), model.beta.size(0), device=model.beta.device, dtype=model.beta.dtype)
 	# Compute the gradient for each component of log_post_grad w.r.t. beta
 	for k in range(log_post_grad.size(0)):
 		# Zero previous gradient
