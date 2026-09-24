@@ -75,7 +75,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         return(log_lik)
 
     def log_beta_prior(self, beta):
-        beta_ = beta.reshape(self.dim, self.covariate_count)
+        # Flat beta is covariate-major (see log_likelihood: X @ beta.reshape(covariate_count, dim)).
+        # Transpose so that column d holds covariate d and broadcasts against sd[d].
+        beta_ = beta.reshape(self.covariate_count, self.dim).T
         sd = self.softplus(self.psi)
         log_prior1 = torch.sum(log_normal(beta_, torch.zeros_like(sd), sd/self.lam))
         return(log_prior1)
@@ -224,10 +226,13 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         return torch.sum(self.log_lik_gradient_persample(beta), 0)
 
     def log_beta_prior_gradient(self, beta):
-        beta_ = beta.reshape(self.dim, self.covariate_count)
+        # Flat beta is covariate-major (see log_likelihood: X @ beta.reshape(covariate_count, dim)).
+        # Transpose so that column d holds covariate d and broadcasts against sd[d].
+        beta_ = beta.reshape(self.covariate_count, self.dim).T
         sd = self.softplus(self.psi)
         log_prior_grad = -(self.lam**2) * beta_ / sd**2
-        return(log_prior_grad.flatten())
+        # beta_ is (dim, covariate_count); transpose back so the flat gradient is covariate-major like beta.
+        return(log_prior_grad.T.flatten())
 
     def log_posterior_gradient(self, beta):
         """
@@ -300,10 +305,9 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
                             self.pivot)
 
     def log_posterior_hessian(self, beta):
-        sd = self.softplus(self.psi).repeat(self.dim)
-        return self.log_likelihood_hessian(beta) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
-
-    # def log_posterior_hessian(self, beta):
-    #     sd = self.softplus(self.psi).repeat(self.dim)
-    #     return torch.sum(self.log_lik_hessian_persample(beta), 0) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+        # Flat beta is covariate-major (index d*dim + k), so covariate d's sd repeats dim times consecutively.
+        sd = self.softplus(self.psi).repeat_interleave(self.dim)
+        H_lik = torch.as_tensor(self.log_likelihood_hessian(beta), dtype=torch.float64)
+        # log N(beta; 0, sd/lam) has Hessian -lam^2/sd^2 on the diagonal.
+        return H_lik - (self.lam**2 / sd**2) * torch.eye(self.dim * self.covariate_count, dtype=torch.float64)
 

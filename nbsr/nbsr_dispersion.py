@@ -112,27 +112,32 @@ class NBSRTrended(NegativeBinomialRegressionModel):
 
     def log_likelihood_hessian(self, beta):
         pi = self.predict(beta, self.X)[0].detach()
-        phi = torch.exp(self.disp_model.forward(pi))
+        phi = torch.exp(self.disp_model.forward(pi)).detach()  # detach: scipy digamma/polygamma below need plain tensors.
         mu = self.s[:,None] * pi
         var = mu + phi * (mu ** 2)
         r = 1.0 / phi
         p = mu / var
 
-        b1 = self.disp_model.b1[0].detach()
-        aa = digamma(self.Y + r) - digamma(r) + torch.log(p)
+        b1 = self.disp_model.b1[0].detach().numpy()
+        Y_np = self.Y.numpy()
         r_np = r.numpy()
-        cc = polygamma(1, self.Y.numpy() + r_np) - polygamma(1, r_np)
+        p_np = p.numpy()
+        aa = digamma(Y_np + r_np) - digamma(r_np) + np.log(p_np)
+        cc = polygamma(1, Y_np + r_np) - polygamma(1, r_np)
 
         return hessian_trended_nbsr(self.X.numpy(), 
-                                    self.Y.numpy(), 
+                                    Y_np, 
                                     pi.numpy(), 
-                                    p.numpy(),
-                                    r.numpy(),
-                                    aa.numpy(), 
-                                    cc.numpy(), 
-                                    b1.numpy(),
+                                    p_np,
+                                    r_np,
+                                    aa, 
+                                    cc, 
+                                    b1,
                                     self.pivot)
 
     def log_posterior_hessian(self, beta):
-        sd = self.softplus(self.psi).repeat(self.dim)
-        return self.log_likelihood_hessian(beta) + (1/sd**2) * torch.eye(self.dim * self.covariate_count)
+        # Flat beta is covariate-major (index d*dim + k), so covariate d's sd repeats dim times consecutively.
+        sd = self.softplus(self.psi).repeat_interleave(self.dim)
+        H_lik = torch.as_tensor(self.log_likelihood_hessian(beta), dtype=torch.float64)
+        # log N(beta; 0, sd/lam) has Hessian -lam^2/sd^2 on the diagonal.
+        return H_lik - (self.lam**2 / sd**2) * torch.eye(self.dim * self.covariate_count, dtype=torch.float64)
