@@ -190,7 +190,8 @@ def feature_contrasts(model, x_map, I, var, w1, w0, ref_top_frac=None, ref_min=3
     delta_adj         : delta_clr - shift, the absolute-abundance effect, with the same se (delta method, shift
                         treated as fixed), Wald z, p-value, BH-adjusted p-value and ppos = Phi(z);
     with laplace_draws > 0: posterior summaries of delta_adj from draws of beta ~ N(beta_hat, -H^-1) in which
-    the shift is recomputed per draw (post_mean, post_sd, q025, q975, ppos_draws, lfsr_draws).
+    the shift is recomputed per draw (post_mean, post_sd, q025, q975, ppos_draws, lfsr_draws, and padj_lfsr_draws,
+    BH on the Gaussian-summary two-sided tail 2*(1 - Phi(|post_mean/post_sd|)) so it is not floored at 1/S).
     Returns (DataFrame indexed by feature position, dict of scalars).
     """
     delta, R = clr_contrast(model, x_map, var, w1, w0)
@@ -224,7 +225,10 @@ def feature_contrasts(model, x_map, I, var, w1, w0, ref_top_frac=None, ref_min=3
         ppos = (adj_draws > 0).double().mean(0).numpy()
         table["ppos_draws"] = ppos
         table["lfsr_draws"] = np.minimum(ppos, 1 - ppos)
-        table["padj_lfsr_draws"] = ss.false_discovery_control(np.clip(2 * table["lfsr_draws"].to_numpy(), 1.0 / laplace_draws, 1.0), method="bh")
+        # BH needs p-values below alpha*k/m, i.e. far below the 1/S resolution of an empirical lfsr; the draws of
+        # delta_adj are close to Gaussian, so use the Gaussian tail of their summary instead of the empirical fraction.
+        z_draws = table["post_mean"].to_numpy() / table["post_sd"].to_numpy()
+        table["padj_lfsr_draws"] = ss.false_discovery_control(2 * ss.norm.cdf(-np.abs(z_draws)), method="bh")
         summary.update({"laplace_draws": laplace_draws, "shift_draw_mean": float(shifts.mean()), "shift_draw_sd": float(shifts.std())})
     return table, summary
 
