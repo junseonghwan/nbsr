@@ -50,6 +50,10 @@ class NBSRConfig():
         dropped = sorted(set(data) - known)
         if dropped:
             print(f"config.json: ignoring fields no longer used: {dropped}")
+        if "dispersion_link" not in data and data.get("trended_dispersion"):
+            # Written by the previous version: its trended model is the log-link, no-offset, log-total-counts form.
+            data.update(dispersion_link="log", feature_offsets=False, z_total_counts=True)
+            print("config.json: previous trended dispersion model -> link=log, no feature offsets, log total counts")
         data = {k: v for k, v in data.items() if k in known}
         data["counts_path"]  = Path(data["counts_path"])
         data["coldata_path"] = Path(data["coldata_path"])
