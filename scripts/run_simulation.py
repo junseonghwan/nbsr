@@ -25,12 +25,17 @@ from scipy.stats import false_discovery_control, norm
 REPO = Path(__file__).resolve().parents[1]
 MAIN = REPO / "nbsr" / "main.py"
 
+HMC = ["--trended_dispersion", "--pivot", "--z_columns", "lib_size", "--z_columns", "miRNA_capture", "--z_log"]
+PREV = ["--trended_dispersion", "--pivot", "--dispersion_link", "log", "--no_feature_offsets",
+        "--z_total_counts", "--b_pi_prior", "0", "0.1", "--sigma_b", "0.1"]
 CONFIGS = {
-    # NBSR-HMC dispersion model: log phi = b_0 + b_j + b_pi logit(pi) + b_w' [log lib_size, log capture]
-    "hmc": ["--trended_dispersion", "--pivot", "--z_columns", "lib_size", "--z_columns", "miRNA_capture", "--z_log"],
-    # previous NBSR dispersion model: b0 + b1 log pi + b2 log(total counts), tight priors, no feature offsets
-    "prev": ["--trended_dispersion", "--pivot", "--dispersion_link", "log", "--no_feature_offsets",
-             "--z_total_counts", "--b_pi_prior", "0", "0.1", "--sigma_b", "0.1"],
+    # NBSR-HMC dispersion model (log phi = b_0 + b_j + b_pi logit(pi) + b_w' [log lib_size, log capture]) and the
+    # previous model (b0 + b1 log pi + b2 log total counts), each with the two-stage empirical beta prior
+    # (DESeq2-style quantile matching) or the jointly learned prior. The empirical ones run first.
+    "hmc_emp": HMC + ["--beta_prior", "empirical"],
+    "prev_emp": PREV + ["--beta_prior", "empirical"],
+    "hmc_learn": HMC,
+    "prev_learn": PREV,
 }
 
 
@@ -117,7 +122,7 @@ def main():
     df = pd.DataFrame([r for r in rows if r is not None])
     args.out.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out / "summary.csv", index=False)
-    cols = ["coverage", "bias_log2", "rmse_log2", "TP_shift", "FP_shift", "FN_shift", "TP_zero", "FP_zero", "seconds"]
+    cols = ["coverage", "coverage_perturbed", "bias_log2", "rmse_log2", "mean_se_log2", "TP_shift", "FP_shift", "FN_shift", "TP_zero", "FP_zero", "seconds"]
     print("\n=== mean over replicates ===")
     print(df.groupby(["config", "size"])[cols].mean().round(3).to_string())
     print(f"\nsummary: {args.out / 'summary.csv'}")
