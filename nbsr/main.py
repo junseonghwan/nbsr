@@ -143,23 +143,28 @@ def fit_posterior(model, optimizer, iterations):
 
 	return (loss_history, best_model_state, best_loss)
 
-def build_dispersion_covariates(coldata_pd, z_columns, sample_count, z_log):
-	"""External covariates W (N, Q) of the dispersion model from columns of X.csv, or None."""
-	if not z_columns:
-		return None
-	ret = construct_tensor_from_coldata(coldata_pd, list(z_columns), sample_count, include_intercept=False)
-	if ret is None:
-		return None
-	W, _ = ret
-	if z_log:
-		assert torch.all(W > 0), "--z_log requires strictly positive dispersion covariates"
-		W = torch.log(W)
-	return W
+def build_dispersion_covariates(coldata_pd, z_columns, sample_count, z_log, Y=None, z_total_counts=False):
+	"""External covariates W (N, Q) of the dispersion model: columns of X.csv (--z_columns, optionally
+	log-transformed) and/or log total counts per sample (--z_total_counts); None if neither."""
+	parts = []
+	if z_columns:
+		ret = construct_tensor_from_coldata(coldata_pd, list(z_columns), sample_count, include_intercept=False)
+		if ret is not None:
+			W, _ = ret
+			if z_log:
+				assert torch.all(W > 0), "--z_log requires strictly positive dispersion covariates"
+				W = torch.log(W)
+			parts.append(W)
+	if z_total_counts:
+		assert Y is not None
+		parts.append(torch.log(Y.sum(1, keepdim=True)))
+	return torch.cat(parts, dim=1) if parts else None
 
 def build_dispersion_model(config, feature_count, W):
 	return DispersionModel(feature_count, W=W, sigma_b=config.sigma_b,
 						   b_pi_prior=(config.b_pi_prior_mean, config.b_pi_prior_sd),
 						   sigma_bj_prior_sd=config.sigma_bj_prior_sd,
+						   link=config.dispersion_link, feature_offsets=config.feature_offsets,
 						   estimate_sd=config.estimate_dispersion_sd)
 
 def construct_model(config):
@@ -171,7 +176,7 @@ def construct_model(config):
 		coldata_pd = None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)  # float32 cannot represent counts above 2^24 exactly
 	X, x_map = construct_tensor_from_coldata(coldata_pd, config.column_names, counts_pd.shape[1])
-	W = build_dispersion_covariates(coldata_pd, config.z_columns, counts_pd.shape[1], config.z_log)
+	W = build_dispersion_covariates(coldata_pd, config.z_columns, counts_pd.shape[1], config.z_log, Y, config.z_total_counts)
 
 	# Allow fixed dispersion values to be passed in.
 	dispersion = read_file_if_exists(config.dispersion_path)
@@ -407,8 +412,11 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 @click.option('--b_pi_prior', nargs=2, type=float, default=(1.0, 0.1), show_default=True, help="Mean and sd of the normal prior on b_pi (dispersion vs logit composition).")
 @click.option('--sigma_bj_prior_sd', type=float, default=0.5, show_default=True, help="Scale of the half-normal prior on sigma_bj (per-feature dispersion offsets).")
 @click.option('--sigma_b', type=float, default=1.0, show_default=True, help="Prior sd of the coefficients on --z_columns.")
+@click.option('--dispersion_link', type=click.Choice(["logit", "log"]), default="logit", show_default=True, help="Transform of pi in the dispersion model: logit (NBSR-HMC) or log (previous NBSR model).")
+@click.option('--no_feature_offsets', is_flag=True, default=False, help="Drop the per-feature offsets b_j from the dispersion model.")
+@click.option('--z_total_counts', is_flag=True, default=False, help="Add log total counts per sample as an external dispersion covariate (the log R_i term of the previous model).")
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, pivot):
+def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, pivot):
 	"""Empirical-Bayes workflow: fit the dispersion model to DESeq2's fitted means, then run NBSR with
 	that dispersion model (fixed unless --update_dispersion)."""
 	data_path = Path(data_path)
@@ -421,6 +429,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 						z_log=z_log,
 						b_pi_prior_mean=b_pi_prior[0], b_pi_prior_sd=b_pi_prior[1],
 						sigma_bj_prior_sd=sigma_bj_prior_sd, sigma_b=sigma_b,
+							dispersion_link=dispersion_link, feature_offsets=not no_feature_offsets, z_total_counts=z_total_counts,
 						lr=lr,
 						iterations=iterations,
 						lam=lam,
@@ -439,7 +448,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	coldata_pd = pd.read_csv(config.coldata_path, na_filter=False, skipinitialspace=True) if os.path.exists(config.coldata_path) else None
 	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
 	X, _ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
-	W = build_dispersion_covariates(coldata_pd, z_columns, counts_pd.shape[1], z_log)
+	W = build_dispersion_covariates(coldata_pd, z_columns, counts_pd.shape[1], z_log, Y, z_total_counts)
 	disp_model = build_dispersion_model(config, Y.shape[1], W)
 	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot)
 	fit_dispersion_model(nbsr_model, pi_hat, eb_iter, eb_lr)
@@ -481,6 +490,9 @@ def fit_dispersion_model(nbsr_model, pi_hat, iterations, lr):
 @click.option('--b_pi_prior', nargs=2, type=float, default=(1.0, 0.1), show_default=True, help="Mean and sd of the normal prior on b_pi (dispersion vs logit composition).")
 @click.option('--sigma_bj_prior_sd', type=float, default=0.5, show_default=True, help="Scale of the half-normal prior on sigma_bj (per-feature dispersion offsets).")
 @click.option('--sigma_b', type=float, default=1.0, show_default=True, help="Prior sd of the coefficients on --z_columns.")
+@click.option('--dispersion_link', type=click.Choice(["logit", "log"]), default="logit", show_default=True, help="Transform of pi in the dispersion model: logit (NBSR-HMC) or log (previous NBSR model).")
+@click.option('--no_feature_offsets', is_flag=True, default=False, help="Drop the per-feature offsets b_j from the dispersion model.")
+@click.option('--z_total_counts', is_flag=True, default=False, help="Add log total counts per sample as an external dispersion covariate (the log R_i term of the previous model).")
 @click.option('--lam', default=1., type=float)
 @click.option('--shape', default=3, type=float)
 @click.option('--scale', default=2, type=float)
@@ -488,7 +500,7 @@ def fit_dispersion_model(nbsr_model, pi_hat, iterations, lr):
 @click.option('--trended_dispersion', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, pivot):
+def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, pivot):
 
 	data_path = Path(data_path)
 	losses = []
@@ -502,6 +514,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, s
 							z_log=z_log,
 							b_pi_prior_mean=b_pi_prior[0], b_pi_prior_sd=b_pi_prior[1],
 							sigma_bj_prior_sd=sigma_bj_prior_sd, sigma_b=sigma_b,
+							dispersion_link=dispersion_link, feature_offsets=not no_feature_offsets, z_total_counts=z_total_counts,
 							lr=lr,
 							iterations=iterations,
 							lam=lam,

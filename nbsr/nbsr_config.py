@@ -17,6 +17,9 @@ class NBSRConfig():
     b_pi_prior_sd: float = 0.1
     sigma_bj_prior_sd: float = 0.5
     sigma_b: float = 1.0                 # prior sd of the coefficients on z_columns
+    dispersion_link: str = "logit"       # "logit" (NBSR-HMC) or "log" (previous NBSR model)
+    feature_offsets: bool = True         # per-feature offsets b_j in the dispersion model
+    z_total_counts: bool = False         # add log(sum_j Y_ij) as an external dispersion covariate
     lr:    float = 0.05
     lam:   float = 1.0
     shape: float = 3.0

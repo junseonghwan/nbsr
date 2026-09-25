@@ -30,9 +30,9 @@ def _base_model(pivot, phi_fixed=True):
                                                dispersion=phi if phi_fixed else None, pivot=pivot)
 
 
-def _trended_model(pivot, with_W=True):
+def _trended_model(pivot, with_W=True, link="logit", feature_offsets=True):
     X, Y, _, W = _data()
-    disp = dm.DispersionModel(Y.shape[1], W=W if with_W else None)
+    disp = dm.DispersionModel(Y.shape[1], W=W if with_W else None, link=link, feature_offsets=feature_offsets)
     with torch.no_grad():  # move every dispersion parameter off its initial value so all terms are exercised
         torch.manual_seed(1)
         disp.b_0.fill_(-0.5)
@@ -46,7 +46,9 @@ def _trended_model(pivot, with_W=True):
 
 MODELS = {"base": lambda pivot: _base_model(pivot),
           "trended": lambda pivot: _trended_model(pivot, with_W=True),
-          "trended_noW": lambda pivot: _trended_model(pivot, with_W=False)}
+          "trended_noW": lambda pivot: _trended_model(pivot, with_W=False),
+          "trended_loglink": lambda pivot: _trended_model(pivot, link="log"),
+          "trended_no_offsets": lambda pivot: _trended_model(pivot, feature_offsets=False)}
 
 
 @pytest.mark.parametrize("pivot", [False, True])

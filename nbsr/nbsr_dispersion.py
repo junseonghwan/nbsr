@@ -43,5 +43,5 @@ class NBSRTrended(NegativeBinomialRegressionModel):
     def _dispersion_terms(self, pi):
         phi = self.dispersion(pi)
         b_pi = self.disp_model.b_pi.detach().reshape(())
-        d1, d2 = self.disp_model.logit_derivatives(pi)
+        d1, d2 = self.disp_model.link_derivatives(pi)
         return phi, -b_pi * d1, -b_pi * d2

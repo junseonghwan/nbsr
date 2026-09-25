@@ -23,9 +23,13 @@ from nbsr.distributions import log_lognormal, log_normal, softplus_inv
 
 class DispersionModel(torch.nn.Module):
     def __init__(self, feature_count, W=None, sigma_b=1.0, b_pi_prior=(1.0, 0.1), sigma_bj_prior_sd=0.5,
-                 sigma_bj_init=0.1, estimate_sd=False, dtype=torch.float64):
+                 sigma_bj_init=0.1, link="logit", feature_offsets=True, estimate_sd=False, dtype=torch.float64):
         """
         feature_count : J
+        link : "logit" (NBSR-HMC) or "log": the transform of pi_ij that b_pi multiplies. With link="log",
+            feature_offsets=False and log total counts in W, this is the previous NBSR dispersion model
+            b0 + b1 log pi + b2 log R (up to the NB2 sign convention).
+        feature_offsets : include the hierarchical per-feature offsets b_j.
         W : (N, Q) external dispersion covariates, or None. Give them on the scale you want in the model
             (the Stan model uses log w_i); no transform is applied here.
         sigma_b : prior sd of b_w, a scalar or a length-Q sequence.
@@ -36,7 +40,10 @@ class DispersionModel(torch.nn.Module):
             dispersion_prior=...). Not part of the trended model itself.
         """
         super().__init__()
+        assert link in ("logit", "log"), f"link must be 'logit' or 'log', got {link!r}"
         self.feature_count = feature_count
+        self.link = link
+        self.feature_offsets = feature_offsets
         self.softplus = torch.nn.Softplus()
         if W is not None:
             W = torch.as_tensor(W, dtype=dtype)
@@ -71,6 +78,8 @@ class DispersionModel(torch.nn.Module):
 
     @property
     def b_j(self):
+        if not self.feature_offsets:
+            return torch.zeros_like(self.z_bj)
         return self.sigma_bj * self.z_bj
 
     def external_predictor(self):
@@ -83,9 +92,12 @@ class DispersionModel(torch.nn.Module):
     def logit(pi):
         return torch.log(pi) - torch.log1p(-pi)
 
+    def link_fn(self, pi):
+        return self.logit(pi) if self.link == "logit" else torch.log(pi)
+
     def forward(self, pi):
         """log NB2 precision phi_ij (Stan convention), (N, J), for a composition pi (N, J)."""
-        log_phi = self.b_0 + self.b_j.unsqueeze(0) + self.b_pi * self.logit(pi)
+        log_phi = self.b_0 + self.b_j.unsqueeze(0) + self.b_pi * self.link_fn(pi)
         if self.W is not None:
             log_phi = log_phi + self.external_predictor().unsqueeze(1)
         if self.estimate_sd:
@@ -96,9 +108,11 @@ class DispersionModel(torch.nn.Module):
         """log of NBSR's dispersion (Var = mu + phi mu^2) = -forward(pi)."""
         return -self.forward(pi)
 
-    @staticmethod
-    def logit_derivatives(pi):
-        """d logit(pi)/d log pi = 1/(1-pi) and d^2 logit(pi)/d(log pi)^2 = pi/(1-pi)^2, elementwise."""
+    def link_derivatives(self, pi):
+        """First and second derivatives of link_fn(pi) with respect to log pi, elementwise:
+        logit: 1/(1-pi) and pi/(1-pi)^2;  log: 1 and 0."""
+        if self.link == "log":
+            return torch.ones_like(pi), torch.zeros_like(pi)
         one_minus = 1.0 - pi
         return 1.0 / one_minus, pi / one_minus ** 2
 
@@ -107,9 +121,10 @@ class DispersionModel(torch.nn.Module):
         zero, one = torch.zeros((), dtype=dtype), torch.ones((), dtype=dtype)
         lp = log_normal(self.b_0, zero, one).sum()
         lp = lp + log_normal(self.b_pi, self.b_pi_prior_mean, self.b_pi_prior_sd).sum()
-        lp = lp + log_normal(self.z_bj, zero, one).sum()
-        # half-normal on sigma_bj > 0: log 2 + log N(sigma; 0, s).
-        lp = lp + math.log(2.0) + log_normal(self.sigma_bj, zero, self.sigma_bj_prior_sd).sum()
+        if self.feature_offsets:
+            lp = lp + log_normal(self.z_bj, zero, one).sum()
+            # half-normal on sigma_bj > 0: log 2 + log N(sigma; 0, s).
+            lp = lp + math.log(2.0) + log_normal(self.sigma_bj, zero, self.sigma_bj_prior_sd).sum()
         if self.covariate_count:
             lp = lp + log_normal(self.b_w, torch.zeros_like(self.b_w), self.sigma_b).sum()
         return lp
