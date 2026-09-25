@@ -10,7 +10,8 @@ class NBSRConfig():
     column_names: list[str]
 
     # Optional variables
-    z_columns: list[str] | None = None
+    z_columns: list[str] | None = None  # external covariates of the dispersion model (columns of X.csv)
+    z_log: bool = False                  # log-transform z_columns before use
     lr:    float = 0.05
     lam:   float = 1.0
     shape: float = 3.0

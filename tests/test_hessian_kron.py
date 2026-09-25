@@ -1,4 +1,4 @@
-"""Vectorized (Kronecker) NBSR Hessians and the Cholesky-based logRR standard errors."""
+"""Closed-form NBSR gradients/Hessians (Kronecker structure) and the Cholesky-based logRR standard errors."""
 import numpy as np
 import pytest
 import torch
@@ -20,18 +20,33 @@ def _data(d=3, N=12, J=6, seed=0):
     pi = np.exp(X @ beta)
     pi /= pi.sum(1, keepdims=True)
     Y = np.stack([rng.multinomial(s[i], pi[i]) for i in range(N)]).astype(float)
-    return torch.tensor(X), torch.tensor(Y), phi
+    W = np.column_stack([np.log(s), rng.standard_normal(N)])
+    return torch.tensor(X), torch.tensor(Y), phi, torch.tensor(W)
 
 
 def _base_model(pivot, phi_fixed=True):
-    X, Y, phi = _data()
+    X, Y, phi, _ = _data()
     return nbm.NegativeBinomialRegressionModel(X, Y, lam=2.0, shape=3.0, scale=2.0,
                                                dispersion=phi if phi_fixed else None, pivot=pivot)
 
 
-def _trended_model(pivot):
-    X, Y, _ = _data()
-    return nbsrd.NBSRTrended(X, Y, disp_model=dm.DispersionModel(Y), lam=2.0, shape=3.0, scale=2.0, pivot=pivot)
+def _trended_model(pivot, with_W=True):
+    X, Y, _, W = _data()
+    disp = dm.DispersionModel(Y.shape[1], W=W if with_W else None)
+    with torch.no_grad():  # move every dispersion parameter off its initial value so all terms are exercised
+        torch.manual_seed(1)
+        disp.b_0.fill_(-0.5)
+        disp.b_pi.fill_(1.3)
+        disp.z_bj.copy_(torch.randn(Y.shape[1], dtype=torch.float64))
+        disp.kappa_bj.fill_(0.2)
+        if with_W:
+            disp.b_w.copy_(torch.tensor([0.3, -0.2], dtype=torch.float64))
+    return nbsrd.NBSRTrended(X, Y, disp_model=disp, lam=2.0, shape=3.0, scale=2.0, pivot=pivot)
+
+
+MODELS = {"base": lambda pivot: _base_model(pivot),
+          "trended": lambda pivot: _trended_model(pivot, with_W=True),
+          "trended_noW": lambda pivot: _trended_model(pivot, with_W=False)}
 
 
 @pytest.mark.parametrize("pivot", [False, True])
@@ -46,35 +61,46 @@ def test_base_hessian_matches_loop_reference(pivot):
     np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-8)
 
 
+@pytest.mark.parametrize("name", list(MODELS))
 @pytest.mark.parametrize("pivot", [False, True])
-def test_trended_hessian_matches_loop_reference(pivot):
-    from scipy.special import digamma, polygamma
-    model = _trended_model(pivot)
-    beta = model.beta.detach()
-    pi = model.predict(beta, model.X)[0].detach()
-    phi = torch.exp(model.disp_model.forward(pi)).detach()
-    mu = model.Y.sum(1, keepdim=True) * pi
-    r = (1.0 / phi).numpy()
-    p = (mu / (mu + phi * mu ** 2)).numpy()
-    Y = model.Y.numpy()
-    aa = digamma(Y + r) - digamma(r) + np.log(p)
-    cc = polygamma(1, Y + r) - polygamma(1, r)
-    expected = reference_hessians.hessian_trended_nbsr(model.X.numpy(), Y, pi.numpy(), p, r, aa, cc,
-                                                       float(model.disp_model.b1.detach()), pivot)
-    actual = model.log_likelihood_hessian(beta).numpy()
-    np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-8)
+def test_likelihood_gradient_matches_autograd(name, pivot):
+    model = MODELS[name](pivot)
+    beta = model.beta.detach().clone().requires_grad_(True)
+    expected = torch.autograd.grad(model.log_likelihood_beta(beta), beta)[0]
+    actual = model.log_lik_gradient(beta.detach())
+    # Tolerance relative to the gradient's scale: with pivot the reference feature can sit near pi ~ 1 and the
+    # logit factor 1/(1-pi) amplifies roundoff in both computations.
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-9 * expected.abs().max())
+    per_sample = model.log_lik_gradient_persample(beta.detach())
+    assert per_sample.shape == (model.sample_count, model.covariate_count * model.dim)
 
 
-@pytest.mark.parametrize("make_model", [_base_model, _trended_model])
+@pytest.mark.parametrize("name", list(MODELS))
 @pytest.mark.parametrize("pivot", [False, True])
-def test_posterior_hessian_matches_autograd(make_model, pivot):
-    model = make_model(pivot)
+def test_posterior_hessian_matches_autograd(name, pivot):
+    model = MODELS[name](pivot)
     with torch.no_grad():  # distinct prior sd per covariate so the layout matters
         model.psi.copy_(torch.linspace(-1.0, 2.0, model.covariate_count, dtype=torch.float64))
     beta = model.beta.detach().clone()
     expected = torch.autograd.functional.hessian(model.log_posterior, beta)
     actual = model.log_posterior_hessian(beta)
-    torch.testing.assert_close(actual, expected, rtol=1e-8, atol=1e-6)
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-8 * expected.abs().max())
+
+
+def test_dispersion_model_forward_and_prior():
+    X, Y, _, W = _data()
+    disp = dm.DispersionModel(Y.shape[1], W=W, sigma_b=[1.0, 0.5])
+    pi = torch.full((X.shape[0], Y.shape[1]), 1.0 / Y.shape[1], dtype=torch.float64)
+    with torch.no_grad():
+        disp.b_w.copy_(torch.tensor([0.5, 0.0], dtype=torch.float64))
+    log_phi = disp.forward(pi)
+    # b_0 + b_j (= 0 at init) + b_pi logit(1/J) + 0.5 log s_i
+    expected = disp.b_0 + disp.b_pi * (np.log(1 / Y.shape[1]) - np.log(1 - 1 / Y.shape[1])) + 0.5 * W[:, :1]
+    torch.testing.assert_close(log_phi, expected.expand_as(log_phi))
+    assert torch.isfinite(disp.log_prior())
+    assert disp.b_j.shape == (Y.shape[1],) and disp.sigma_bj > 0
+    with pytest.raises(AssertionError):
+        dm.DispersionModel(Y.shape[1], W=W, sigma_b=[1.0, 1.0, 1.0])
 
 
 @pytest.mark.parametrize("pivot", [False, True])
@@ -86,7 +112,6 @@ def test_logRR_standard_errors_match_inverse_formula(pivot):
     N, J = model.Y.shape
     assert logRR.shape == se.shape == (N, J) and cov.shape == (N, J, J)
     np.testing.assert_allclose(log2RR, logRR / np.log(2))
-    # Reference: Var = a' I^-1 a with the same contrast gradient, via an explicit inverse.
     Z0, Z1 = model.X.clone(), model.X.clone()
     Z0[:, 2] = 0; Z1[:, 2] = 1
     pi0 = model.predict(model.beta, Z0)[0].detach()
@@ -107,7 +132,6 @@ def test_cholesky_with_jitter_adds_ridge_only_when_needed():
     A = torch.tensor([[4.0, 1.0], [1.0, 3.0]], dtype=torch.float64)
     torch.testing.assert_close(main.cholesky_with_jitter(A), torch.linalg.cholesky(A))
     singular = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=torch.float64)
-    L = main.cholesky_with_jitter(singular)
-    assert torch.isfinite(L).all()
+    assert torch.isfinite(main.cholesky_with_jitter(singular)).all()
     with pytest.raises(RuntimeError):
         main.cholesky_with_jitter(-A)

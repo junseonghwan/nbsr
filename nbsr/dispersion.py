@@ -1,93 +1,115 @@
-"""Dispersion model of the NBSR (softmax) family, shared across features."""
+"""Dispersion model of the NBSR (softmax) family.
+
+    log phi_ij = b_0 + b_j + b_pi * logit(pi_ij) + w_i' b_w
+
+pi_ij is the model's own composition (so the dispersion moves with beta), b_j is a per-feature offset with a
+hierarchical scale, and W holds external per-sample covariates (e.g. log library size, log capture rate).
+This matches the NBSR-HMC Stan model; the MAP is taken in the Stan model's non-centred parameterization,
+b_j = sigma_bj * z_j, so that the hierarchical scale has a proper mode.
+
+Priors: b_0 ~ N(0, 1), b_pi ~ N(1, 0.1), z_j ~ N(0, 1), sigma_bj ~ half-N(0, 0.5), b_w,q ~ N(0, sigma_b[q]).
+"""
+import math
+
 import torch
 
-from nbsr.distributions import log_negbinomial, log_normal, log_lognormal
+from nbsr.distributions import log_lognormal, log_normal, softplus_inv
 
-# Model for dispersion parameters of the NBSR.
+
 class DispersionModel(torch.nn.Module):
-    def __init__(self, Y, Z = None, estimate_sd=False):
+    def __init__(self, feature_count, W=None, sigma_b=1.0, b_pi_prior=(1.0, 0.1), sigma_bj_prior_sd=0.5,
+                 sigma_bj_init=0.1, estimate_sd=False, dtype=torch.float64):
+        """
+        feature_count : J
+        W : (N, Q) external dispersion covariates, or None. Give them on the scale you want in the model
+            (the Stan model uses log w_i); no transform is applied here.
+        sigma_b : prior sd of b_w, a scalar or a length-Q sequence.
+        b_pi_prior : (mean, sd) of the normal prior on b_pi.
+        sigma_bj_prior_sd : scale of the half-normal prior on sigma_bj.
+        estimate_sd : also carry a per-feature sd (softplus(kappa)) for the log-normal density used when this
+            model acts as a prior on free per-feature dispersions (NegativeBinomialRegressionModel with
+            dispersion_prior=...). Not part of the trended model itself.
+        """
         super().__init__()
+        self.feature_count = feature_count
         self.softplus = torch.nn.Softplus()
-        
-        self.register_buffer("Y", Y)
-        if Z is not None:
-            self.register_buffer("Z", Z)
+        if W is not None:
+            W = torch.as_tensor(W, dtype=dtype)
+            assert W.ndim == 2, "W must be (samples, covariates)"
+            self.register_buffer("W", W)
+            self.covariate_count = W.shape[1]
         else:
-            self.Z = None
-        R = Y.sum(1)
-        log_R = torch.log(R)
-        self.register_buffer("R", R)
-        self.register_buffer("log_R", log_R)
-
-        # Formulate design matrix: dimension is N x K x (P+3).
-        # For each sample i=1,...,N, the KxP matrix contains 
-        # a column of 1's (intercept_j), 
-        # a column over j log \pi_{i,j}, 
-        # a column of log R_i
-        # and remaining P variables as containined in Z.
-        # In total we need P+3 parameters.
-        self.sample_count = Y.shape[0]
-        self.feature_count = Y.shape[1]
-        # Initialize coefficients to small values.
-        self.b0 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=True)
-        self.b1 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=True)
-        self.b2 = torch.nn.Parameter(0.05*torch.randn(1, dtype=torch.float64), requires_grad=True)
-        if self.Z is None:
-            self.beta = None
+            self.W = None
             self.covariate_count = 0
-        else:
-            self.covariate_count = Z.shape[1]
-            self.beta = torch.nn.Parameter(torch.randn(self.covariate_count, dtype=torch.float64), requires_grad=True)
-        
+        sigma_b = torch.as_tensor(sigma_b, dtype=dtype).reshape(-1)
+        if sigma_b.numel() == 1:
+            sigma_b = sigma_b.expand(self.covariate_count)
+        assert sigma_b.numel() == self.covariate_count, "sigma_b must be a scalar or have one entry per column of W"
+        self.register_buffer("sigma_b", sigma_b.clone())
+        self.register_buffer("b_pi_prior_mean", torch.tensor(float(b_pi_prior[0]), dtype=dtype))
+        self.register_buffer("b_pi_prior_sd", torch.tensor(float(b_pi_prior[1]), dtype=dtype))
+        self.register_buffer("sigma_bj_prior_sd", torch.tensor(float(sigma_bj_prior_sd), dtype=dtype))
+
+        self.b_0 = torch.nn.Parameter(torch.zeros(1, dtype=dtype))
+        self.b_pi = torch.nn.Parameter(torch.full((1,), float(b_pi_prior[0]), dtype=dtype))
+        self.z_bj = torch.nn.Parameter(torch.zeros(feature_count, dtype=dtype))
+        self.kappa_bj = torch.nn.Parameter(softplus_inv(torch.tensor(float(sigma_bj_init), dtype=dtype)).reshape(1))
+        self.b_w = torch.nn.Parameter(torch.zeros(self.covariate_count, dtype=dtype))
+
         self.estimate_sd = estimate_sd
-        if estimate_sd:
-            # Optimize kappa over real line -- get_sd() will map it to positive line.
-            self.kappa = torch.nn.Parameter(torch.randn(self.feature_count, dtype=torch.float64), requires_grad=True)
-        else:
-            self.kappa = None
+        self.kappa = torch.nn.Parameter(torch.randn(feature_count, dtype=dtype)) if estimate_sd else None
+
+    # ---- derived parameters
+    @property
+    def sigma_bj(self):
+        return self.softplus(self.kappa_bj)
+
+    @property
+    def b_j(self):
+        return self.sigma_bj * self.z_bj
+
+    def external_predictor(self):
+        """w_i' b_w for every sample, (N,), or 0 when there are no external covariates."""
+        if self.W is None:
+            return 0.0
+        return self.W @ self.b_w
+
+    @staticmethod
+    def logit(pi):
+        return torch.log(pi) - torch.log1p(-pi)
 
     def forward(self, pi):
-        # log_pi has shape (self.sample_count, self.feature_count)
-        #assert(log_pi.shape[0] == self.sample_count)
-        #assert(log_pi.shape[1] == self.feature_count)
-        # log \phi_{ij} = b_{0,j} + b_1 log \pi_{i,j} + b_2 log R_i + \beta' z_i + \epsilon_j.
-        # if self.feature_specific_intercept:
-        #     val0 = self.b0.unsqueeze(-1).transpose(0,1).expand(self.sample_count, self.feature_count)
-        # else:
-        #     val0 = self.b0
-        val0 = self.b0
-        val1 = self.b1 * torch.log(pi)
-        val2 = self.b2 * self.log_R.unsqueeze(-1).expand(-1, self.feature_count)
-        if self.Z is None:
-            val3 = 0
-        else:
-            val3 = torch.mm(self.Z, self.beta.unsqueeze(-1)).expand(-1, self.feature_count)
-        log_phi_mean = val0 + val1 + val2 + val3
+        """log phi, (N, J), for a composition pi (N, J)."""
+        log_phi = self.b_0 + self.b_j.unsqueeze(0) + self.b_pi * self.logit(pi)
+        if self.W is not None:
+            log_phi = log_phi + self.external_predictor().unsqueeze(1)
         if self.estimate_sd:
-            log_phi_mean += (self.get_sd() ** 2) * 0.5
-        return(log_phi_mean)
+            log_phi = log_phi + 0.5 * self.get_sd() ** 2  # mean of the log-normal, see log_density.
+        return log_phi
+
+    @staticmethod
+    def logit_derivatives(pi):
+        """d logit(pi)/d log pi = 1/(1-pi) and d^2 logit(pi)/d(log pi)^2 = pi/(1-pi)^2, elementwise."""
+        one_minus = 1.0 - pi
+        return 1.0 / one_minus, pi / one_minus ** 2
 
     def log_prior(self):
-        log_prior0 = log_normal(self.b0, torch.zeros_like(self.b0), torch.tensor(1.)).sum()
-        log_prior1 = log_normal(self.b1, torch.zeros_like(self.b1), torch.tensor(0.1))
-        log_prior2 = log_normal(self.b2, torch.zeros_like(self.b2), torch.tensor(0.1))
-        log_prior = log_prior0 + log_prior1 + log_prior2
-        return log_prior.sum()
+        dtype = self.b_0.dtype
+        zero, one = torch.zeros((), dtype=dtype), torch.ones((), dtype=dtype)
+        lp = log_normal(self.b_0, zero, one).sum()
+        lp = lp + log_normal(self.b_pi, self.b_pi_prior_mean, self.b_pi_prior_sd).sum()
+        lp = lp + log_normal(self.z_bj, zero, one).sum()
+        # half-normal on sigma_bj > 0: log 2 + log N(sigma; 0, s).
+        lp = lp + math.log(2.0) + log_normal(self.sigma_bj, zero, self.sigma_bj_prior_sd).sum()
+        if self.covariate_count:
+            lp = lp + log_normal(self.b_w, torch.zeros_like(self.b_w), self.sigma_b).sum()
+        return lp
 
-    def log_density(self, phi, pi):
-        # Log Normal distribution density.
-        log_phi_mean = self.forward(pi)
-        log_lik_vals = log_lognormal(phi, log_phi_mean, self.get_sd().unsqueeze(0))
-        return(log_lik_vals)
-
+    # ---- use as a prior on free per-feature dispersions (legacy NBSR workflow)
     def get_sd(self):
+        assert self.estimate_sd, "construct with estimate_sd=True to use the log-normal density"
         return self.softplus(self.kappa)
 
-    # log P(Y | \mu, dispersion) + log P(dispersion | \theta)
-    def log_posterior(self, pi):
-        mu = pi * self.R[:,None]
-
-        log_phi = self.forward(pi)
-        log_lik_vals = log_negbinomial(self.Y, mu, torch.exp(log_phi))
-        log_posterior = log_lik_vals.sum() + self.log_prior()
-        return(log_posterior)
+    def log_density(self, phi, pi):
+        """log-normal density of per-feature dispersions phi around the trended log phi at composition pi."""
+        return log_lognormal(phi, self.forward(pi), self.get_sd().unsqueeze(0))

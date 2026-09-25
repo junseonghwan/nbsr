@@ -41,3 +41,25 @@ def softplus_inv(y):
 
 def softplus(y):
     return torch.nn.Softplus()(y)
+
+
+def nb_log_density_derivatives(y, mu, phi, second=True):
+    """Derivatives of log NB(y; mu, phi) with respect to u = log mu and v = log phi, elementwise.
+
+    Returns (l_u, l_v, l_uu, l_uv, l_vv); the second-order terms are None when second=False.
+    Written with q = 1 / (1 + phi mu) and r = 1 / phi so that it stays finite for very small phi.
+    """
+    r = 1.0 / phi
+    q = 1.0 / (1.0 + phi * mu)
+    l_u = (y - mu) * q
+    dl_dr = (torch.special.digamma(y + r) - torch.special.digamma(r) + 1.0
+             - torch.log1p(phi * mu) - (y + r) * phi * q)
+    l_v = -r * dl_dr
+    if not second:
+        return l_u, l_v, None, None, None
+    l_uu = -mu * (1.0 + phi * y) * q ** 2
+    l_uv = -(y - mu) * mu * phi * q ** 2
+    d2l_dr2 = (torch.special.polygamma(1, y + r) - torch.special.polygamma(1, r)
+               + phi - 2.0 * phi * q + (y + r) * (phi * q) ** 2)
+    l_vv = r * dl_dr + r ** 2 * d2l_dr2
+    return l_u, l_v, l_uu, l_uv, l_vv

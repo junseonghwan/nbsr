@@ -23,7 +23,7 @@ from torch.func import functional_call, grad, hessian, vmap
 from tqdm import tqdm
 
 from nbsr.dataset import Dataset
-from nbsr.distributions import log_negbinomial, log_normal
+from nbsr.distributions import log_negbinomial, log_normal, nb_log_density_derivatives
 from nbsr.featurewise_dispersion import LogDispersionTrendPrior, MeanPowerCovariateDispersion
 from nbsr.featurewise_nb_model import FeaturewiseNegBinom
 
@@ -118,16 +118,6 @@ class FeaturewiseNBStats:
         q = 1.0 / (1.0 + phi * mu)                                           # = r / (r + mu)
         return eta, v, mu, phi, r, q
 
-    @staticmethod
-    def _nb_score_terms(y, mu, phi, r, q):
-        """Per-sample first derivatives of log NB(y; mu, phi) w.r.t. eta = log mu (l_u) and v = log phi (l_v),
-        plus dl/dr (r = 1/phi) which the second derivatives need."""
-        l_u = (y - mu) * q
-        dl_dr = (torch.special.digamma(y + r) - torch.special.digamma(r) + 1.0
-                 - torch.log1p(phi * mu) - (y + r) * phi * q)
-        l_v = -r * dl_dr
-        return l_u, l_v, dl_dr
-
     def _prior_terms(self, template, mu_bar):
         dm = template.dispersion_model
         return dict(beta_sd=template.beta_prior_sd,
@@ -160,7 +150,7 @@ class FeaturewiseNBStats:
         if not want_grad and not want_hessian:
             return f, None, None
 
-        l_u, l_v, dl_dr = self._nb_score_terms(y, mu, phi, r, q)
+        l_u, l_v, l_uu, l_uv, l_vv = nb_log_density_derivatives(y, mu, phi, second=want_hessian)
         bb = b.unsqueeze(1)
         g = torch.empty_like(theta)
         g[:, :P] = (l_u + bb * l_v) @ X - beta / pr["beta_sd"] ** 2
@@ -171,11 +161,6 @@ class FeaturewiseNBStats:
         if not want_hessian:
             return f, g, None
 
-        l_uu = -mu * (1.0 + phi * y) * q ** 2
-        l_uv = -(y - mu) * mu * phi * q ** 2
-        d2l_dr2 = (torch.special.polygamma(1, y + r) - torch.special.polygamma(1, r)
-                   + phi - 2.0 * phi * q + (y + r) * (phi * q) ** 2)
-        l_vv = r * dl_dr + r ** 2 * d2l_dr2
         c = l_uv + bb * l_vv                          # weight of x_i in the beta x (a, b, gamma) blocks
         wbb = l_uu + 2.0 * bb * l_uv + bb ** 2 * l_vv  # weight of x_i x_i' in the beta block
 
@@ -207,7 +192,7 @@ class FeaturewiseNBStats:
         P = X.shape[1]
         b = theta[:, P + 1]
         eta, v, mu, phi, r, q = self._linear_predictors(theta, X, W, sf)
-        l_u, l_v, _ = self._nb_score_terms(YT, mu, phi, r, q)
+        l_u, l_v, _, _, _ = nb_log_density_derivatives(YT, mu, phi, second=False)
         # d eta_i / d theta = [x_i, 0, 0, 0];  d v_i / d theta = [b x_i, 1, eta_i, w_i]
         S = torch.zeros(YT.shape[0], YT.shape[1], theta.shape[1], dtype=theta.dtype)
         S[:, :, :P] = (l_u + b.unsqueeze(1) * l_v).unsqueeze(-1) * X.unsqueeze(0)
