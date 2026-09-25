@@ -16,6 +16,7 @@ from nbsr.nbsr_config import NBSRConfig
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 from nbsr.nbsr_dispersion import NBSRTrended
 from nbsr.dispersion import DispersionModel
+from nbsr.legacy import upgrade_state_dict, convert_legacy_dispersion_model
 from nbsr.utils import *
 
 torch.set_printoptions(precision=9)
@@ -143,17 +144,6 @@ def fit_posterior(model, optimizer, iterations):
 
 	return (loss_history, best_model_state, best_loss)
 
-def _convert_legacy_dispersion_model(old, Y):
-	"""Previous DispersionModel (b0 + b1 log pi + b2 log R, optional per-feature sd kappa) -> current class."""
-	new = DispersionModel(Y.shape[1], W=torch.log(Y.sum(1, keepdim=True)), link="log", feature_offsets=False,
-						  estimate_sd=getattr(old, "estimate_sd", False))
-	with torch.no_grad():
-		new.b_0.copy_(-old.b0.detach().reshape(1)); new.b_pi.copy_(-old.b1.detach().reshape(1)); new.b_w.copy_(-old.b2.detach().reshape(1))
-		if new.estimate_sd:
-			new.kappa.copy_(old.kappa.detach())
-	print("dispersion model: converted the previous form (b0 + b1 log pi + b2 log R) to the NB2 form")
-	return new
-
 def build_dispersion_covariates(coldata_pd, z_columns, sample_count, z_log, Y=None, z_total_counts=False):
 	"""External covariates W (N, Q) of the dispersion model: columns of X.csv (--z_columns, optionally
 	log-transformed) and/or log total counts per sample (--z_total_counts); None if neither."""
@@ -210,7 +200,7 @@ def construct_model(config):
 			print(f"Dispersion prior model is specified. Loading from {dispersion_model_path}")
 			disp_model = torch.load(dispersion_model_path, weights_only=False)
 			if hasattr(disp_model, "b0"):   # pickled previous dispersion model
-				disp_model = _convert_legacy_dispersion_model(disp_model, Y)
+				disp_model = convert_legacy_dispersion_model(disp_model, Y)
 		if trended:
 			if disp_model is None:
 				print(f"Dispersion trend will be estimated.")
@@ -248,34 +238,9 @@ def load_model_from_state_dict(config, state_dict):
         print(f"Initialised {sorted(transfer)} from {config.init_from}")
     return model, params, x_map
 
-def _upgrade_state_dict(sd):
-	"""Translate checkpoints written before this version of the models.
-	- psi (softplus-parameterized learned prior sd) -> fixed beta_prior_sd; lam / hyperprior buffers dropped.
-	- library sizes s (now a buffer) recomputed from Y.
-	- previous dispersion model b0 + b1 log pi + b2 log R -> DispersionModel(link="log", feature_offsets=False,
-	  W = log total counts) in the NB2 convention: b_0 = -b0, b_pi = -b1, b_w = -b2, z_bj = 0."""
-	sd = dict(sd)
-	if "psi" in sd and "beta_prior_sd" not in sd:
-		sd["beta_prior_sd"] = torch.nn.functional.softplus(sd.pop("psi"))
-		print("checkpoint: converted learned psi to a fixed beta_prior_sd")
-	for k in ["lam", "beta_var_shape", "beta_var_scale"]:
-		sd.pop(k, None)
-	if "s" not in sd and "Y" in sd:
-		sd["s"] = sd["Y"].to(torch.float64).sum(1)
-	if "disp_model.b0" in sd:
-		J = sd["Y"].shape[1]
-		sd["disp_model.b_0"] = -sd.pop("disp_model.b0").reshape(1).to(torch.float64)
-		sd["disp_model.b_pi"] = -sd.pop("disp_model.b1").reshape(1).to(torch.float64)
-		sd["disp_model.b_w"] = -sd.pop("disp_model.b2").reshape(1).to(torch.float64)
-		sd["disp_model.z_bj"] = torch.zeros(J, dtype=torch.float64)
-		for k in [k for k in sd if k.startswith("disp_model.") and k.split(".", 1)[1] in ("Y", "R", "log_R", "Z", "beta")]:
-			sd.pop(k)
-		print("checkpoint: converted the previous dispersion model (b0 + b1 log pi + b2 log R) to the NB2 form")
-	return sd
-
 def _load_state(model, sd):
 	"""Load a (possibly upgraded) state dict; buffers that newer model versions add may be missing."""
-	missing, unexpected = model.load_state_dict(_upgrade_state_dict(sd), strict=False)
+	missing, unexpected = model.load_state_dict(upgrade_state_dict(sd), strict=False)
 	allowed_missing = {"disp_model.kappa_bj", "disp_model.sigma_b", "disp_model.b_pi_prior_mean", "disp_model.b_pi_prior_sd",
 					   "disp_model.sigma_bj_prior_sd", "disp_model.W"}
 	bad = [k for k in missing if k not in allowed_missing]
