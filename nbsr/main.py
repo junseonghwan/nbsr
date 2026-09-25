@@ -224,7 +224,7 @@ def load_model_from_state_dict(config, state_dict):
     model, params, x_map = construct_model(config)
     if model_state_key in state_dict:
         print("Loading previously saved model...")
-        model.load_state_dict(state_dict[model_state_key]['model_state_dict'])
+        model.load_state_dict(_upgrade_state_dict(state_dict[model_state_key]['model_state_dict']))
     elif config.init_from is not None:
         # Warm start: beta and the dispersion-model parameters of another fit (e.g. the stage-1 fit); the beta
         # prior sd is left as constructed, since that is what differs between the stages.
@@ -234,6 +234,17 @@ def load_model_from_state_dict(config, state_dict):
         model.load_state_dict(transfer, strict=False)
         print(f"Initialised {sorted(transfer)} from {config.init_from}")
     return model, params, x_map
+
+def _upgrade_state_dict(sd):
+	"""Translate checkpoints written before the prior sd became a fixed buffer: psi (softplus-parameterized
+	learned sd) becomes beta_prior_sd, and the retired lam / inverse-gamma hyperprior buffers are dropped."""
+	sd = dict(sd)
+	if "psi" in sd and "beta_prior_sd" not in sd:
+		sd["beta_prior_sd"] = torch.nn.functional.softplus(sd.pop("psi"))
+		print("checkpoint: converted learned psi to a fixed beta_prior_sd")
+	for k in ["lam", "beta_var_shape", "beta_var_scale"]:
+		sd.pop(k, None)
+	return sd
 
 def empirical_prior_sd(beta, hessian, covariate_count, quantile=0.95, max_abs=10.0):
 	"""DESeq2-style prior width per covariate from a (near-)MLE fit: the sd of a zero-centred normal whose
