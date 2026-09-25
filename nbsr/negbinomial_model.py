@@ -15,7 +15,9 @@ from nbsr.utils import kron_hessian
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
-    def __init__(self, X, Y, lam, shape, scale, dispersion_prior=None, dispersion=None, pivot=False):
+    def __init__(self, X, Y, lam, shape, scale, dispersion_prior=None, dispersion=None, pivot=False, beta_prior_sd=None):
+        """beta_prior_sd: fix the prior sd of beta per covariate (scalar or length-P) instead of learning it by
+        empirical Bayes through psi. Mirrors sigma_beta2 given as data in the NBSR-HMC Stan model."""
         super().__init__()
         assert isinstance(X, torch.Tensor) and isinstance(Y, torch.Tensor)
         # Place X, Y on buffer so that they can be moved to GPU.
@@ -44,7 +46,16 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
             self.phi = softplus_inv(torch.as_tensor(dispersion, dtype=torch.float64) + 1e-9)
-        self.psi = torch.nn.Parameter(softplus_inv(torch.ones(self.covariate_count, dtype=torch.float64)), requires_grad=True)
+        if beta_prior_sd is None:
+            self.psi = torch.nn.Parameter(softplus_inv(torch.ones(self.covariate_count, dtype=torch.float64)), requires_grad=True)
+            self.learn_beta_prior_sd = True
+        else:
+            sd = torch.as_tensor(beta_prior_sd, dtype=torch.float64).reshape(-1)
+            if sd.numel() == 1:
+                sd = sd.expand(self.covariate_count)
+            assert sd.numel() == self.covariate_count, "beta_prior_sd must be a scalar or one value per covariate"
+            self.register_buffer("psi", softplus_inv(sd.clone()))
+            self.learn_beta_prior_sd = False
 
     def to_device(self, device):
         self.to(device)
@@ -84,7 +95,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         sd = self.softplus(self.psi)
         # normal prior on beta -- 0 mean and sd = softplus(psi) / lam; inverse-gamma prior on sd^2.
         log_beta_prior = self.log_beta_prior(beta)
-        log_var_prior = torch.sum(log_invgamma(sd ** 2, self.beta_var_shape, self.beta_var_scale))
+        log_var_prior = torch.sum(log_invgamma(sd ** 2, self.beta_var_shape, self.beta_var_scale)) if self.learn_beta_prior_sd else 0.0
         log_dispersion_prior = 0
         if self.disp_model is not None:
             # The dispersion model acts as a log-normal prior on the free per-feature dispersions, evaluated

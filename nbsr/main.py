@@ -195,7 +195,7 @@ def construct_model(config):
 	disp_model = None
 	if dispersion is not None:
 		print("Run NBSR with pre-specified dispersion values.")
-		model = NegativeBinomialRegressionModel(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=dispersion, pivot=pivot)
+		model = NegativeBinomialRegressionModel(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=dispersion, pivot=pivot, beta_prior_sd=config.beta_prior_sd)
 	else:
 		if dispersion_model_path is not None:
 			print(f"Dispersion prior model is specified. Loading from {dispersion_model_path}")
@@ -204,10 +204,10 @@ def construct_model(config):
 			if disp_model is None:
 				print(f"Dispersion trend will be estimated.")
 				disp_model = build_dispersion_model(config, Y.shape[1], W)
-			model = NBSRTrended(X, Y, disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot)
+			model = NBSRTrended(X, Y, disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot, beta_prior_sd=config.beta_prior_sd)
 		else:
 			print("Run NBSR with shared dispersion per feature.")
-			model = NegativeBinomialRegressionModel(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=None, pivot=pivot)
+			model = NegativeBinomialRegressionModel(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=None, pivot=pivot, beta_prior_sd=config.beta_prior_sd)
 
 	param_list = []
 	print("Parameters being optimized:")
@@ -415,8 +415,9 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 @click.option('--dispersion_link', type=click.Choice(["logit", "log"]), default="logit", show_default=True, help="Transform of pi in the dispersion model: logit (NBSR-HMC) or log (previous NBSR model).")
 @click.option('--no_feature_offsets', is_flag=True, default=False, help="Drop the per-feature offsets b_j from the dispersion model.")
 @click.option('--z_total_counts', is_flag=True, default=False, help="Add log total counts per sample as an external dispersion covariate (the log R_i term of the previous model).")
+@click.option('--beta_prior_sd', multiple=True, type=float, help="Fix the prior sd of beta (one value, or one per covariate incl. the intercept) instead of learning it by empirical Bayes.")
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, pivot):
+def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, beta_prior_sd, pivot):
 	"""Empirical-Bayes workflow: fit the dispersion model to DESeq2's fitted means, then run NBSR with
 	that dispersion model (fixed unless --update_dispersion)."""
 	data_path = Path(data_path)
@@ -439,6 +440,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 						trended_dispersion=True,
 						dispersion_model_file="disp_model.pth",
 						update_dispersion=update_dispersion,
+						beta_prior_sd=list(beta_prior_sd) or None,
 						pivot=pivot)
 
 	print("Performing Empirical Bayes estimation of dispersion.")
@@ -499,8 +501,9 @@ def fit_dispersion_model(nbsr_model, pi_hat, iterations, lr):
 @click.option('--dispersion_model_file', default=None, type=str)
 @click.option('--trended_dispersion', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
+@click.option('--beta_prior_sd', multiple=True, type=float, help="Fix the prior sd of beta (one value, or one per covariate incl. the intercept) instead of learning it by empirical Bayes.")
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, pivot):
+def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, beta_prior_sd, pivot):
 
 	data_path = Path(data_path)
 	losses = []
@@ -523,6 +526,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, s
 							estimate_dispersion_sd=estimate_dispersion_sd,
 							trended_dispersion=trended_dispersion,
 							dispersion_model_file=dispersion_model_file,
+							beta_prior_sd=list(beta_prior_sd) or None,
 							pivot=pivot)
 		loss_history, _ = run(config)
 		losses.append(np.min(loss_history)) # store the best (minimal) loss.

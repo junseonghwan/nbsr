@@ -13,8 +13,8 @@ from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 
 class NBSRTrended(NegativeBinomialRegressionModel):
 
-    def __init__(self, X, Y, disp_model, lam, shape, scale, pivot=False):
-        super().__init__(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=None, pivot=pivot)
+    def __init__(self, X, Y, disp_model, lam, shape, scale, pivot=False, beta_prior_sd=None):
+        super().__init__(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=None, pivot=pivot, beta_prior_sd=beta_prior_sd)
         assert disp_model.feature_count == self.rna_count, "dispersion model built for a different number of features"
         self.phi = None
 
@@ -34,7 +34,7 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         log_lik = self.log_likelihood_beta(beta)
         sd = self.softplus(self.psi)
         log_beta_prior = self.log_beta_prior(beta)
-        log_var_prior = torch.sum(log_invgamma(sd ** 2, self.beta_var_shape, self.beta_var_scale))
+        log_var_prior = torch.sum(log_invgamma(sd ** 2, self.beta_var_shape, self.beta_var_scale)) if self.learn_beta_prior_sd else 0.0
         return log_lik + log_beta_prior + log_var_prior + self.disp_model.log_prior()
 
     def forward(self, beta):

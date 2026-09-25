@@ -31,6 +31,7 @@ class NBSRConfig():
     dispersion_model_file:  str | None = None # we will look for output_path / dispersion_model_file
     update_dispersion:      bool = False  # optimise a pre-fitted dispersion model jointly with beta.
     pivot:  bool = False
+    beta_prior_sd: list[float] | None = None  # fixed prior sd per covariate; None = learn by empirical Bayes (psi)
     use_cuda_if_available: bool = True
 
     def dump_json(self, file: str | Path):
