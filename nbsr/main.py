@@ -1,6 +1,6 @@
+import copy
 import os
 import re
-import copy
 import shutil
 import time
 from pathlib import Path
@@ -8,14 +8,9 @@ from pathlib import Path
 import click
 import numpy as np
 import pandas as pd
-import patsy
-import scipy
 import scipy.optimize as so
 import scipy.stats as ss
 import torch
-
-from pydeseq2.dds import DeseqDataSet
-from pydeseq2.default_inference import DefaultInference
 
 from nbsr.nbsr_config import NBSRConfig
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
@@ -23,10 +18,8 @@ from nbsr.nbsr_dispersion import NBSRTrended
 from nbsr.dispersion import DispersionModel
 from nbsr.utils import *
 
-torch.set_default_dtype(torch.float32)
 torch.set_printoptions(precision=9)
 
-torch_dtype=torch.float32
 checkpoint_filename = "checkpoint.pth"
 model_state_key = "model_state"
 hessian_filename = "hessian.npy"
@@ -35,21 +28,6 @@ covariance_path = "covariance.pth"
 @click.group()
 def cli():
 	pass
-
-def moving_average(arr, window):
-	return np.convolve(arr, np.ones(window), 'valid') / window
-
-def assess_convergence(loss_history, tol, lookback_iterations, window_size=100):
-	if len(loss_history) < window_size:
-		return False
-
-	diffs = np.abs(np.diff(moving_average(loss_history, window_size)))
-	if np.all(diffs[-lookback_iterations:] < tol):
-		print(f"Convergence reached")
-		return True
-	else:
-		print(f"Not converged")
-		return False
 
 def compute_negative_hessian_log_posterior(model, use_cuda_if_available=True):
 	"""Negative Hessian of the log posterior at the fitted beta, in closed form (see utils.kron_hessian).
@@ -172,7 +150,7 @@ def construct_model(config):
 		coldata_pd = pd.read_csv(config.coldata_path, na_filter=False, skipinitialspace=True)
 	else:
 		coldata_pd = None
-	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float32)
+	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)  # float32 cannot represent counts above 2^24 exactly
 	X, x_map = construct_tensor_from_coldata(coldata_pd, config.column_names, counts_pd.shape[1])
 	# We are not using z variables for now.
 	#Z, z_map = construct_tensor_from_coldata(coldata_pd, config["z_columns"], counts_pd.shape[1], False)
@@ -413,7 +391,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 		coldata_pd = pd.read_csv(data_path / "X.csv", na_filter=False, skipinitialspace=True)
 	else:
 		coldata_pd = None
-	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float32)
+	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)  # float32 cannot represent counts above 2^24 exactly
 	X, x_map = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
 	disp_model_path = "disp_model.pth"
 	config = NBSRConfig(counts_path=data_path / "Y.csv",

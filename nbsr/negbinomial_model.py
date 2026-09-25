@@ -65,7 +65,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         log_unnorm_exp = torch.matmul(self.X, beta_)
         if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, dtype=beta.dtype, device=beta.device)))
         norm = torch.logsumexp(log_unnorm_exp, 1)
         norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
         
@@ -117,7 +117,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
         log_unnorm_exp = torch.matmul(X, beta_)
         if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, dtype=beta.dtype, device=beta.device)))
         norm = torch.logsumexp(log_unnorm_exp, 1)
         norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
         pi = norm_expr
