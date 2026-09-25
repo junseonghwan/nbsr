@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 import json
 
@@ -46,6 +46,11 @@ class NBSRConfig():
     @classmethod
     def load_json(cls, file: str | Path):
         data = json.load(open(file))
+        known = {f.name for f in fields(cls)}
+        dropped = sorted(set(data) - known)
+        if dropped:
+            print(f"config.json: ignoring fields no longer used: {dropped}")
+        data = {k: v for k, v in data.items() if k in known}
         data["counts_path"]  = Path(data["counts_path"])
         data["coldata_path"] = Path(data["coldata_path"])
         if data.get("dispersion_path") is not None:

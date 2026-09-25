@@ -257,6 +257,10 @@ def run(config):
 	"""Fit the model of `config`; with beta_prior == "empirical" run a wide-prior stage-1 fit first and set the
 	prior sd of each covariate from it before the main fit."""
 	if config.beta_prior_sd is None:   # empirical: stage-1 fit with a wide prior sets the sd per covariate
+		if config.dispersion_model_file is not None:
+			# Resolve against the main output directory now, since stage 1 writes to a subdirectory of it.
+			config = copy.deepcopy(config)
+			config.dispersion_model_file = str(Path(config.output_path) / config.dispersion_model_file)
 		stage1 = copy.deepcopy(config)
 		stage1.beta_prior = "fixed"
 		stage1.beta_prior_sd = [config.stage1_prior_sd]
