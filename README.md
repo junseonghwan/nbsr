@@ -138,9 +138,10 @@ analysis.
 
 `nbsr.fnb_stats.FeaturewiseNBStats` fits, per feature, `log mu_ij = log s_i + x_i' beta_j` with
 `log phi_ij = a_j + b_j log mu_ij + w_i' gamma_j`, all features at once by batched Newton with closed-form
-derivatives, and tests contrasts with either the model-based or a sandwich (robust) standard error. See
-`scripts/run_immune.py` and the permutation benchmarks in `scripts/`. It is experimental and not part of the
-command line.
+derivatives, and tests contrasts with either the model-based or a sandwich (robust) standard error
+(`results(..., robust=True)`). Build a `nbsr.dataset.Dataset` from a counts data frame and metadata with
+patsy formulas for the mean and dispersion models, then `FeaturewiseNBStats(dataset).fit()`. It is
+experimental and not part of the command line.
 
 ## Citation
 
