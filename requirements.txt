@@ -1,9 +1,12 @@
-click==8.3.1
-numpy==2.3.5
-pandas==2.3.3
-scipy==1.16.3
-setuptools==75.1.0
+# Pinned versions known to work together (conda env `nbsr`); setup.py holds the loose requirements.
 torch==2.2.2
+numpy==2.3.5
+scipy==1.16.3
+pandas==2.3.3
+click==8.3.1
+tables==3.10.2
+joblib==1.5.2
+tqdm==4.67.1
 pydeseq2==0.5.2
 patsy==1.0.2
 anndata==0.11.4
