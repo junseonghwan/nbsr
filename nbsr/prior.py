@@ -15,6 +15,7 @@ import torch
 
 from nbsr.fit import (build_dispersion_model, checkpoint_filename, fit_dispersion_model_to_composition, fit_once,
                       hessian_filename, load_data, save_dispersion_model_outputs)
+from nbsr.inference import pooled_proportion, reference_set
 from nbsr.nbsr_dispersion import NBSRTrended
 
 prior_filename = "prior.json"
@@ -109,6 +110,15 @@ def elicit_prior(config):
         "init_from": str(output_path / checkpoint_filename),
         "pivot": config.pivot,
     }
+    # Laplace mode of beta as a covariate x feature CSV (readable by R for Stan inits), and the abundance
+    # ranking of the features so that a reference set for the compositional shift can be formed downstream.
+    beta_mat = beta.reshape(model.covariate_count, model.dim)
+    pd.DataFrame(beta_mat, index=names).to_csv(output_path / "beta_mode.csv")
+    pooled = pooled_proportion(model)
+    order = torch.argsort(pooled, descending=True).tolist()
+    prior["beta_mode_file"] = str(output_path / "beta_mode.csv")
+    prior["features_by_abundance"] = order            # feature indices (0-based, column order of Y.csv), most abundant first
+    prior["reference_top10"] = reference_set(pooled, 0.1, 30).tolist()
     if isinstance(model, NBSRTrended):
         dm = model.disp_model
         with torch.no_grad():

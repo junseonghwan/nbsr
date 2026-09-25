@@ -207,6 +207,8 @@ def feature_contrasts(model, x_map, I, var, w1, w0, ref_top_frac=None, ref_min=3
         "delta_adj": adj.numpy(), "z": z.numpy(), "pvalue": pval,
         "padj": ss.false_discovery_control(pval, method="bh"),
         "ppos": ss.norm.cdf(z.numpy()),
+        # BH applied to the two-sided posterior tail probability 2*lfsr, the p-value analogue used for HMC.
+        "padj_lfsr": ss.false_discovery_control(2 * np.minimum(ss.norm.cdf(z.numpy()), 1 - ss.norm.cdf(z.numpy())), method="bh"),
         "pooled_proportion": pooled.numpy(),
         "reference": np.isin(np.arange(delta.numel()), ref.numpy()),
     })
@@ -222,6 +224,7 @@ def feature_contrasts(model, x_map, I, var, w1, w0, ref_top_frac=None, ref_min=3
         ppos = (adj_draws > 0).double().mean(0).numpy()
         table["ppos_draws"] = ppos
         table["lfsr_draws"] = np.minimum(ppos, 1 - ppos)
+        table["padj_lfsr_draws"] = ss.false_discovery_control(np.clip(2 * table["lfsr_draws"].to_numpy(), 1.0 / laplace_draws, 1.0), method="bh")
         summary.update({"laplace_draws": laplace_draws, "shift_draw_mean": float(shifts.mean()), "shift_draw_sd": float(shifts.std())})
     return table, summary
 
