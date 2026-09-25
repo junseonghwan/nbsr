@@ -12,6 +12,11 @@ class NBSRConfig():
     # Optional variables
     z_columns: list[str] | None = None  # external covariates of the dispersion model (columns of X.csv)
     z_log: bool = False                  # log-transform z_columns before use
+    # Priors of the dispersion model (nbsr/dispersion.py).
+    b_pi_prior_mean: float = 1.0
+    b_pi_prior_sd: float = 0.1
+    sigma_bj_prior_sd: float = 0.5
+    sigma_b: float = 1.0                 # prior sd of the coefficients on z_columns
     lr:    float = 0.05
     lam:   float = 1.0
     shape: float = 3.0
