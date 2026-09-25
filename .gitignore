@@ -151,3 +151,5 @@ dmypy.json
 .pyre/
 .Rproj.user
 
+# Local analysis drivers (simulation grids, one-off runs); the benchmark repository is their home.
+scratch/
