@@ -273,7 +273,7 @@ def run(config):
 	model.load_state_dict(curr_best_model_state)
 	pi, _ = model.predict(model.beta, model.X)
 	if isinstance(model, NBSRTrended):
-		phi = torch.exp(model.disp_model(pi))
+		phi = model.dispersion(pi)
 		save_dispersion_model_outputs(model.disp_model, output_path)
 	else:
 		phi = model.softplus(model.phi)
@@ -444,7 +444,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot)
 	fit_dispersion_model(nbsr_model, pi_hat, eb_iter, eb_lr)
 
-	phi = torch.exp(disp_model.forward(pi_hat))
+	phi = torch.exp(disp_model.log_dispersion(pi_hat))
 	np.savetxt(data_path / "eb_dispersion.csv", phi.data.numpy().transpose(), delimiter=',')
 	save_dispersion_model_outputs(disp_model, data_path)
 	torch.save(disp_model, data_path / config.dispersion_model_file)
@@ -458,7 +458,7 @@ def fit_dispersion_model(nbsr_model, pi_hat, iterations, lr):
 	disp_model = nbsr_model.disp_model
 	optimizer = torch.optim.Adam(disp_model.parameters(), lr=lr)
 	for i in range(iterations):
-		phi = torch.exp(disp_model.forward(pi_hat))
+		phi = torch.exp(disp_model.log_dispersion(pi_hat))
 		loss = -(nbsr_model.log_likelihood(pi_hat, phi) + disp_model.log_prior())
 		if loss.isnan():
 			print("nan")

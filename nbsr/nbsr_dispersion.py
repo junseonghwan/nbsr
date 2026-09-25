@@ -1,7 +1,9 @@
-"""NBSR with the trended dispersion model: log phi_ij = b_0 + b_j + b_pi logit(pi_ij) + w_i' b_w.
+"""NBSR with the trended dispersion model (nbsr.dispersion.DispersionModel, NB2 convention):
+
+    log dispersion_ij = -(b_0 + b_j + b_pi logit(pi_ij) + w_i' b_w)
 
 The dispersion depends on beta through pi, so the derivatives carry the chain-rule terms
-c_ij = d log phi_ij / d log pi_ij = b_pi / (1 - pi_ij) and c2_ij = b_pi pi_ij / (1 - pi_ij)^2.
+c_ij = d log dispersion_ij / d log pi_ij = -b_pi / (1 - pi_ij) and c2_ij = -b_pi pi_ij / (1 - pi_ij)^2.
 """
 import torch
 
@@ -17,7 +19,7 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         self.phi = None
 
     def dispersion(self, pi):
-        return torch.exp(self.disp_model.forward(pi))
+        return torch.exp(self.disp_model.log_dispersion(pi))
 
     def log_likelihood(self, pi, phi):
         """Log-likelihood at an explicit composition and dispersion (used when fitting the dispersion model
@@ -42,4 +44,4 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         phi = self.dispersion(pi)
         b_pi = self.disp_model.b_pi.detach().reshape(())
         d1, d2 = self.disp_model.logit_derivatives(pi)
-        return phi, b_pi * d1, b_pi * d2
+        return phi, -b_pi * d1, -b_pi * d2

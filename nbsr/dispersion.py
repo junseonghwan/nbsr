@@ -1,6 +1,11 @@
-"""Dispersion model of the NBSR (softmax) family.
+"""Dispersion model of the NBSR (softmax) family, in the NB2 parameterization of the NBSR-HMC Stan model:
 
-    log phi_ij = b_0 + b_j + b_pi * logit(pi_ij) + w_i' b_w
+    Var(y_ij) = mu_ij + mu_ij^2 / phi_ij,     log phi_ij = b_0 + b_j + b_pi * logit(pi_ij) + w_i' b_w
+
+phi here is the NB2 precision ("size"); NBSR's dispersion (Var = mu + phi_nbsr mu^2) is its inverse, so
+log_dispersion(pi) = -forward(pi) is what the likelihood uses. Keeping Stan's convention makes the fitted
+b_0, b_pi, b_j, b_w directly comparable with NBSR-HMC (in particular b_pi ~ N(1, 0.1): precision rises,
+i.e. dispersion falls, with abundance).
 
 pi_ij is the model's own composition (so the dispersion moves with beta), b_j is a per-feature offset with a
 hierarchical scale, and W holds external per-sample covariates (e.g. log library size, log capture rate).
@@ -79,13 +84,17 @@ class DispersionModel(torch.nn.Module):
         return torch.log(pi) - torch.log1p(-pi)
 
     def forward(self, pi):
-        """log phi, (N, J), for a composition pi (N, J)."""
+        """log NB2 precision phi_ij (Stan convention), (N, J), for a composition pi (N, J)."""
         log_phi = self.b_0 + self.b_j.unsqueeze(0) + self.b_pi * self.logit(pi)
         if self.W is not None:
             log_phi = log_phi + self.external_predictor().unsqueeze(1)
         if self.estimate_sd:
             log_phi = log_phi + 0.5 * self.get_sd() ** 2  # mean of the log-normal, see log_density.
         return log_phi
+
+    def log_dispersion(self, pi):
+        """log of NBSR's dispersion (Var = mu + phi mu^2) = -forward(pi)."""
+        return -self.forward(pi)
 
     @staticmethod
     def logit_derivatives(pi):
@@ -110,6 +119,6 @@ class DispersionModel(torch.nn.Module):
         assert self.estimate_sd, "construct with estimate_sd=True to use the log-normal density"
         return self.softplus(self.kappa)
 
-    def log_density(self, phi, pi):
-        """log-normal density of per-feature dispersions phi around the trended log phi at composition pi."""
-        return log_lognormal(phi, self.forward(pi), self.get_sd().unsqueeze(0))
+    def log_density(self, dispersion, pi):
+        """log-normal density of per-feature NBSR dispersions around the trended log dispersion at composition pi."""
+        return log_lognormal(dispersion, self.log_dispersion(pi), self.get_sd().unsqueeze(0))
