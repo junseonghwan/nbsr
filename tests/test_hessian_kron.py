@@ -48,7 +48,10 @@ MODELS = {"base": lambda pivot: _base_model(pivot),
           "trended": lambda pivot: _trended_model(pivot, with_W=True),
           "trended_noW": lambda pivot: _trended_model(pivot, with_W=False),
           "trended_loglink": lambda pivot: _trended_model(pivot, link="log"),
-          "trended_no_offsets": lambda pivot: _trended_model(pivot, feature_offsets=False)}
+          "trended_no_offsets": lambda pivot: _trended_model(pivot, feature_offsets=False),
+          # a user-supplied f(pi): derivatives come from autograd inside the dispersion model
+          "trended_custom_f": lambda pivot: _trended_model(pivot, link=lambda pi: torch.sqrt(pi) - torch.log1p(-pi)),
+          "trended_callable_logit": lambda pivot: _trended_model(pivot, link=lambda pi: torch.log(pi) - torch.log1p(-pi))}
 
 
 @pytest.mark.parametrize("pivot", [False, True])
@@ -137,3 +140,13 @@ def test_cholesky_with_jitter_adds_ridge_only_when_needed():
     assert torch.isfinite(main.cholesky_with_jitter(singular)).all()
     with pytest.raises(RuntimeError):
         main.cholesky_with_jitter(-A)
+
+
+def test_callable_link_matches_builtin_logit():
+    """The autograd path for a callable f must reproduce the closed-form logit derivatives."""
+    X, Y, _, W = _data()
+    builtin = dm.DispersionModel(Y.shape[1], link="logit")
+    custom = dm.DispersionModel(Y.shape[1], link=lambda pi: torch.log(pi) - torch.log1p(-pi))
+    pi = torch.rand(4, Y.shape[1], dtype=torch.float64) * 0.9 + 0.01
+    for a, b in zip(builtin.link_derivatives(pi), custom.link_derivatives(pi)):
+        torch.testing.assert_close(a, b)

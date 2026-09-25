@@ -17,6 +17,7 @@ Priors: b_0 ~ N(0, 1), b_pi ~ N(1, 0.1), z_j ~ N(0, 1), sigma_bj ~ half-N(0, 0.5
 import math
 
 import torch
+from torch.func import grad, vmap
 
 from nbsr.distributions import log_lognormal, log_normal, softplus_inv
 
@@ -26,9 +27,11 @@ class DispersionModel(torch.nn.Module):
                  sigma_bj_init=0.1, link="logit", feature_offsets=True, estimate_sd=False, dtype=torch.float64):
         """
         feature_count : J
-        link : "logit" (NBSR-HMC) or "log": the transform of pi_ij that b_pi multiplies. With link="log",
-            feature_offsets=False and log total counts in W, this is the previous NBSR dispersion model
-            b0 + b1 log pi + b2 log R (up to the NB2 sign convention).
+        link : the transform f of pi_ij that b_pi multiplies: "logit" (NBSR-HMC), "log", or any callable
+            f(pi) built from differentiable torch operations (its derivatives with respect to log pi, which
+            the closed-form beta gradient/Hessian need, are then taken by autograd elementwise). With
+            link="log", feature_offsets=False and log total counts in W this is the previous NBSR dispersion
+            model b0 + b1 log pi + b2 log R (up to the NB2 sign convention).
         feature_offsets : include the hierarchical per-feature offsets b_j.
         W : (N, Q) external dispersion covariates, or None. Give them on the scale you want in the model
             (the Stan model uses log w_i); no transform is applied here.
@@ -40,7 +43,7 @@ class DispersionModel(torch.nn.Module):
             dispersion_prior=...). Not part of the trended model itself.
         """
         super().__init__()
-        assert link in ("logit", "log"), f"link must be 'logit' or 'log', got {link!r}"
+        assert link in ("logit", "log") or callable(link), f"link must be 'logit', 'log' or a callable f(pi), got {link!r}"
         self.feature_count = feature_count
         self.link = link
         self.feature_offsets = feature_offsets
@@ -93,6 +96,9 @@ class DispersionModel(torch.nn.Module):
         return torch.log(pi) - torch.log1p(-pi)
 
     def link_fn(self, pi):
+        """f(pi), elementwise."""
+        if callable(self.link):
+            return self.link(pi)
         return self.logit(pi) if self.link == "logit" else torch.log(pi)
 
     def forward(self, pi):
@@ -109,8 +115,14 @@ class DispersionModel(torch.nn.Module):
         return -self.forward(pi)
 
     def link_derivatives(self, pi):
-        """First and second derivatives of link_fn(pi) with respect to log pi, elementwise:
-        logit: 1/(1-pi) and pi/(1-pi)^2;  log: 1 and 0."""
+        """First and second derivatives of h(u) = f(exp(u)) with respect to u = log pi, elementwise.
+        logit: 1/(1-pi) and pi/(1-pi)^2;  log: 1 and 0;  callable f: by autograd."""
+        if callable(self.link):
+            f = self.link
+            h = lambda u: f(torch.exp(u))
+            dh, d2h = grad(h), grad(grad(h))
+            u = torch.log(pi).detach().reshape(-1)
+            return vmap(dh)(u).reshape(pi.shape), vmap(d2h)(u).reshape(pi.shape)
         if self.link == "log":
             return torch.ones_like(pi), torch.zeros_like(pi)
         one_minus = 1.0 - pi
