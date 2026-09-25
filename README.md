@@ -1,114 +1,134 @@
-# Python code for microRNA analysis
+# NBSR: Negative Binomial Softmax Regression for miRNA-seq
 
-Negative Binomial Softmax Regression (NBSR) model for the counts data arising from miRNA-seq experiments.
+NBSR models the counts of all features in a sample jointly: the composition `pi_i = softmax(x_i' beta)` is a
+function of the sample's covariates, and each count is negative binomial with mean `s_i pi_ij`. Inference is on
+log relative-abundance ratios between covariate levels, with standard errors from the Hessian of the log
+posterior at the mode. The package also contains a feature-wise NB regression (`nbsr.fnb_stats`) used for
+method comparisons.
+
+Paper: https://doi.org/10.1101/2024.05.07.592964
 
 ## Installation
 
 ```bash
 git clone https://github.com/junseonghwan/nbsr.git
+cd nbsr
+python -m pip install -e .      # -e for development
+pytest tests                    # 43 tests
 ```
 
-```
-cd /path/to/nbsr/
-python -m pip install .
-```
+`requirements.txt` pins a set of versions known to work together.
 
-For development mode `-e` option:
+## Input files
 
-```
-cd /path/to/nbsr/
-python -m pip install -e .
-```
+A data directory with
 
-Run tests: 
+- `Y.csv`: counts, one row per feature and one column per sample (first column holds the feature names).
+- `X.csv`: sample metadata, one row per sample in the same order as the columns of `Y.csv`, with a header
+  naming the covariates. Categorical covariates are dummy-coded with the first level (alphabetical) as the
+  reference.
 
-```
-python -m unittest tests/
-```
+## Models
 
-or 
+`NegativeBinomialRegressionModel` (`nbsr/negbinomial_model.py`) has one dispersion per feature, either free
+(with an optional log-normal prior around the dispersion model) or fixed from a `dispersion.csv` file.
 
-```
-pytest tests/
-```
+`NBSRTrended` (`nbsr/nbsr_dispersion.py`) ties the dispersion to the fitted composition through the
+dispersion model of `nbsr/dispersion.py`:
 
-## Analysis
+    log phi_ij = b_0 + b_j + b_pi * logit(pi_ij) + w_i' b_w
 
-To analyze individual dataset using Jupyter-lab, refer to `demo.ipynb`.
+with a per-feature offset `b_j = sigma_bj z_j` (hierarchical scale, half-normal prior on `sigma_bj`),
+`b_pi ~ N(1, 0.1)` and external per-sample covariates `W` taken from columns of `X.csv`. This is the model of
+the NBSR-HMC Stan implementation; the CLI fits its posterior mode.
 
-## Batch execution to replicate simulation results
+Both models take `--pivot`, which fixes the last feature's coefficients at zero (reference category, as in the
+Stan model). Without it every feature has coefficients and the normal prior on `beta` resolves the softmax
+invariance.
 
-The required arguments are (1) path to directory containing `X.csv` and `Y.csv` and (2) a list of explanatory variable names (covariates) separated by space matching the column names in `X.csv`.
+Gradients and Hessians of the log posterior are in closed form (`utils.kron_hessian`), so the Hessian of a
+model with a few hundred features takes well under a second; it is a dense `(P * J)^2` matrix, so the
+approach targets panels of hundreds to a few thousand features.
 
-```
-python nbsr/main.py train /path/to/data var1 var2 var3
-```
-
-Optional arguments:
+## Fitting
 
 ```
--i: number of optimization iterations. Default: 10,000.
--l: learning rate for the optimzer. Default: 0.05. Recommend trying values <= 0.2.
--r: number of optimization runs. Default: 1.
---lam: scaling parameter of standar deviation on beta. Default: 1.
---shape: shape parameter for Beta prior distribution on standard deviation on beta. Default: 3.
---scale: shape parameter for Beta prior distribution on standard deviation on beta. Default: 2.
----trended_dispersion: use trended median dispersion. Default: False.
----estimate_dispersion_sd: use trended mean dispersion if flag is on. Default: False.
+python nbsr/main.py train /path/to/data var1 var2 [options]
 ```
 
-When the number of samples for each experimental condtion is `>= 10`, we recommend to try `--trended_dispersion`.
-When the number of samples is small, we recommend to first run DESeq2 to obtain mean expression levels for each sample and feature and then to run NBSR with Empirical Bayes. NBSR EB will estimate the dispersion model parameters, which will be used as a prior in estimating the feature-wise dispersion parameters. 
-To run DESeq2, use `deseq2.R`:
+Fits the posterior mode by Adam, writes `nbsr_beta.csv`, `nbsr_beta_sd.csv`, `nbsr_pi.csv`,
+`nbsr_dispersion.csv`, the dispersion model parameters (`nbsr_dispersion_params.csv`, `nbsr_dispersion_bj.csv`,
+`nbsr_dispersion_bw.csv`), `checkpoint.pth`, `config.json` and `hessian.npy` into `/path/to/data/runK` for
+each run, and copies the best run to `/path/to/data`.
+
+| option | default | meaning |
+|---|---|---|
+| `-i, --iterations` | 10000 | Adam iterations |
+| `-l, --lr` | 0.05 | learning rate (values above 0.2 are rarely stable) |
+| `-r, --runs` | 1 | independent initialisations; the best log posterior is kept |
+| `--trended_dispersion` | off | use `NBSRTrended` (recommended from about 10 samples per condition) |
+| `--z_columns NAME` | none | columns of `X.csv` used as external dispersion covariates `W` (repeat the flag for several) |
+| `--z_log` | off | log-transform the `--z_columns` first (e.g. library sizes, capture rates) |
+| `--dispersion_model_file FILE` | none | load a fitted dispersion model (`disp_model.pth` from `eb`) and hold it fixed |
+| `--estimate_dispersion_sd` | off | estimate a per-feature sd for the log-normal dispersion prior |
+| `--lam`, `--shape`, `--scale` | 1, 3, 2 | `beta ~ N(0, sd/lam)` with an inverse-gamma(shape, scale) prior on `sd^2`, one sd per covariate |
+| `--pivot` | off | reference-category parameterisation |
+
+A `dispersion.csv` in the data directory (one value per feature) switches to fixed dispersions and ignores the
+dispersion options.
+
+### Small sample sizes: empirical Bayes
+
+With few samples per condition, first obtain fitted means from DESeq2, then fit the dispersion model to
+them, then fit NBSR with that dispersion model held fixed:
 
 ```
-Rscript scripts/deseq2.R /path/to/data var1,var2,var3
+Rscript scripts/deseq2.R /path/to/data var1,var2      # writes deseq2_mu.csv
+python nbsr/main.py eb /path/to/data var1 var2 [options]
 ```
 
-This requires [R installation](https://www.r-project.org/) with [DESeq2 package installed](https://bioconductor.org/packages/release/bioc/html/DESeq2.html). `/path/to/data` should match the path containing the data files `X.csv` and `Y.csv`. Running `deseq2.R` will produce a file `/path/to/data/deseq2_mu.csv`.
+`eb` takes the `train` options plus `-f, --mu_file` (default `deseq2_mu.csv`), `--eb_iter` and `--eb_lr` for
+the dispersion-model fit, and `--update_dispersion` to keep optimising the dispersion model jointly with
+`beta` in the second stage. It writes its outputs directly into `/path/to/data`.
 
-Then, run NBSR EB:
-
-```
-python nbsr/main.py eb /path/to/data var1 var2 var3
-```
-
-with optional arguments:
-
-Finally, to perform inference to compare two experimental conditions say on `var1` with `level1` (numerator) and `level2` (denominator):
+## Inference
 
 ```
-python nbsr/main.py results /path/to/data var1 level1 level2
+python nbsr/main.py results /path/to/data var1 level_numerator level_denominator
 ```
 
-The above command will create a directory `/path/to/data/level1_level2` and generate result files.
+creates `/path/to/data/var1__level_numerator_vs_level_denominator/` containing
+
+- `nbsr_results.h5` with `logRR`, `se`, `stat`, `pvalue`, `padj` (features x samples; identical across samples
+  when `var1` is the only covariate),
+- `nbsr_results.csv` with `log2FC`, `pvalue`, `padj` per feature when the contrast does not vary by sample,
+- `covariance.pth`, the per-sample covariance of `logRR` across features (skip with `--skip_cov`).
+
+Standard errors come from the Cholesky factor of the negative Hessian; `--recompute_hessian` recomputes it
+from the checkpoint instead of reading `hessian.npy`. `--absolute_fc` subtracts the mode of the `logRR`
+distribution (the compositional shift) before testing.
 
 ## Example
 
-A test dataset can be found in `data/test`. This dataset contains one covariate `trt` (treatment) with levels `null` and `alt` with `n=10` for each of the two conditions. The code for generating this test data can be found in `scripts/generate_data.R`. 
-
-We will run NBSR on the test data via command:
-
 ```
-python nbsr/main.py train data/test/ trt -i 10000 --dispersion_model --feature_specific_intercept
-```
-
-Then, to compare two treatment levels with `alt` in the numerator:
-
-```
+python nbsr/main.py train data/test trt -i 10000 --trended_dispersion
 python nbsr/main.py results data/test trt alt null
 ```
 
+`data/test` has 200 features and 20 samples with one two-level covariate `trt` (`null` vs `alt`), generated by
+`scripts/generate_data.R`. `scripts/de.R` shows how the outputs are read in R for a differential-expression
+analysis.
 
-## Analysis
+## Feature-wise NB regression
 
-While we are working on developing an R package to interface with Python code, we suggest to run NBSR on command line and load the results in R for analysis. An example script for performing differential expression analysis is given in `scripts/de.R`.
-
-Further information will be provided once we develop an R package.
-
-The figures from the paper can be reproduced by following the scripts provided [here](https://github.com/junseonghwan/nbsr-experiments/).
+`nbsr.fnb_stats.FeaturewiseNBStats` fits, per feature, `log mu_ij = log s_i + x_i' beta_j` with
+`log phi_ij = a_j + b_j log mu_ij + w_i' gamma_j`, all features at once by batched Newton with closed-form
+derivatives, and tests contrasts with either the model-based or a sandwich (robust) standard error. See
+`scripts/run_immune.py` and the permutation benchmarks in `scripts/`. It is experimental and not part of the
+command line.
 
 ## Citation
 
-If you use our package for analysis, please cite our paper doi: https://doi.org/10.1101/2024.05.07.592964.
-
+Jun et al., "Negative binomial softmax regression for differential abundance analysis of miRNA-seq data",
+bioRxiv 2024, doi: https://doi.org/10.1101/2024.05.07.592964. Figures of the paper:
+https://github.com/junseonghwan/nbsr-experiments/.
