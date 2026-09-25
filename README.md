@@ -1,7 +1,8 @@
-# NBSR: Negative Binomial Softmax Regression for miRNA-seq
+# NBSR: Negative Binomial Softmax Regression
 
-NBSR models the counts of all features in a sample jointly: the composition `pi_i = softmax(x_i' beta)` is a
-function of the sample's covariates, and each count is negative binomial with mean `s_i pi_ij`. Inference is on
+NBSR is a compositional model for sequencing counts (microRNA, microbiome, surface proteins, any assay whose
+counts sum to a library size). The composition `pi_i = softmax(x_i' beta)` of a sample is a function of its
+covariates, and each count is negative binomial with mean `s_i pi_ij` and its own dispersion. Inference is on
 log relative-abundance ratios between covariate levels, with standard errors from the Hessian of the log
 posterior at the mode. The package also contains a feature-wise NB regression (`nbsr.fnb_stats`) used for
 method comparisons.
