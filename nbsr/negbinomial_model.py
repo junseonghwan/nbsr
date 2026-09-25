@@ -1,269 +1,163 @@
+"""Negative Binomial Softmax Regression with one free dispersion per feature (or fixed dispersions).
+
+    pi_i = softmax(x_i' beta)   (feature J fixed at 0 when pivot=True)
+    y_ij ~ NB(s_i pi_ij, phi_j)
+
+Gradients and Hessians of the log-likelihood with respect to the flat, covariate-major beta are in closed
+form. Every term factorizes through u_ij = log pi_ij, whose derivative d u_ij / d eta_ik = 1[j=k] - pi_ik,
+so the Hessian has the Kronecker structure handled by utils.kron_hessian.
+"""
 import torch
 
-from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv
+from nbsr.distributions import log_negbinomial, log_normal, softplus_inv, nb_log_density_derivatives
 from nbsr.utils import kron_hessian
 
-# This model implements free to vary dispersion parameterization.
+
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
-    def __init__(self, X, Y, lam, shape, scale, dispersion_prior=None, dispersion=None, pivot=False):
+    def __init__(self, X, Y, beta_prior_sd=10.0, dispersion_prior=None, dispersion=None, pivot=False):
+        """
+        X : (N, P) design with intercept; Y : (N, J) counts.
+        beta_prior_sd : prior sd of beta, a scalar or one value per covariate (intercept first). Fixed, not
+            learned: the run() driver sets it from a wide-prior stage-1 fit (DESeq2-style quantile matching)
+            unless the user supplies it, mirroring sigma_beta2 given as data in the NBSR-HMC Stan model.
+        dispersion_prior : a DispersionModel acting as a log-normal prior on free per-feature dispersions.
+        dispersion : fixed per-feature dispersions (array of length J); None = free parameters.
+        pivot : fix the last feature's coefficients at zero (reference category).
+        """
         super().__init__()
-        assert(isinstance(X, torch.Tensor))
-        assert(isinstance(Y, torch.Tensor))
+        assert isinstance(X, torch.Tensor) and isinstance(Y, torch.Tensor)
         # Place X, Y on buffer so that they can be moved to GPU.
-        self.register_buffer("X", X)
-        self.register_buffer("Y", Y)
-        self.register_buffer("lam", torch.tensor(lam, dtype=torch.float64))
-        self.register_buffer("beta_var_shape", torch.tensor(shape, dtype=torch.float64))
-        self.register_buffer("beta_var_scale", torch.tensor(scale, dtype=torch.float64))
-        
-        self.s = torch.sum(self.Y, dim=1)  # Summing over rows
+        self.register_buffer("X", X.to(torch.float64))
+        self.register_buffer("Y", Y.to(torch.float64))
+        self.register_buffer("s", self.Y.sum(dim=1))  # library sizes
+
         self.pivot = pivot
         self.softplus = torch.nn.Softplus()
         self.sample_count = self.Y.shape[0]
-        #self.covariate_count = self.XX.shape[1] + 1 # +1 for the intercept term.
         self.covariate_count = self.X.shape[1]
         self.rna_count = self.Y.shape[1]
         self.converged = False
-        #self.X = torch.cat([torch.ones(self.sample_count, 1), self.XX], dim = 1)
         print("RNA count:", self.rna_count)
         print("Sample count:", self.sample_count)
         print("Covariate count:", self.covariate_count)
 
+        sd = torch.as_tensor(beta_prior_sd, dtype=torch.float64).reshape(-1)
+        if sd.numel() == 1:
+            sd = sd.expand(self.covariate_count)
+        assert sd.numel() == self.covariate_count, "beta_prior_sd must be a scalar or one value per covariate"
+        self.register_buffer("beta_prior_sd", sd.clone())
+
         # The parameters we adjust during training.
         self.dim = self.rna_count - 1 if pivot else self.rna_count
         self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
-        #self.beta = torch.nn.Parameter(torch.zeros(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
         self.disp_model = dispersion_prior
         if dispersion is None:
             self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
-            self.phi = softplus_inv(torch.tensor(dispersion + 1e-9, requires_grad=False))
-        self.psi = torch.nn.Parameter(softplus_inv(torch.ones(self.covariate_count, dtype=torch.float64)), requires_grad=True)
-
-    # TODO: MARKED FOR REMOVAL
-    # def specify_beta_prior(self, lam, beta_var_shape, beta_var_scale):
-    #     self.lam = torch.tensor(lam, requires_grad=False)
-    #     self.beta_var_shape = torch.tensor(beta_var_shape, requires_grad=False)
-    #     self.beta_var_scale = torch.tensor(beta_var_scale, requires_grad=False)
-    #     print("Initial psi:", self.psi)
+            self.phi = softplus_inv(torch.as_tensor(dispersion, dtype=torch.float64) + 1e-9)
 
     def to_device(self, device):
         self.to(device)
 
-    def log_likelihood(self, beta):
-        """
-        Computes the log-likelihood of the negative binomial model.
-
-        Args:
-            beta (torch.Tensor): A tensor of shape (covariate_count * dim, 1) containing the model parameters.
-
-        Returns:
-            torch.Tensor: A tensor of shape (1,) containing the log-likelihood of the model.
-        """
-        # reshape beta:
+    # ------------------------------------------------------------------ model
+    def predict(self, beta, X):
+        """Composition pi (N, J) and the linear predictor (N, J) for design X."""
         beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-        log_unnorm_exp = torch.matmul(self.X, beta_)
+        log_unnorm_exp = torch.matmul(X, beta_)
         if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count)))
+            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(X.shape[0], dtype=beta.dtype, device=beta.device)))
         norm = torch.logsumexp(log_unnorm_exp, 1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        
-        log_lik_vals = log_negbinomial(self.Y, self.s[:, None] * norm_expr, self.softplus(self.phi))
-        log_lik = torch.sum(log_lik_vals)  # Sum all values
+        pi = torch.exp(log_unnorm_exp - norm[:, None])
+        return pi, log_unnorm_exp
 
-        return(log_lik)
+    def dispersion(self, pi):
+        """phi broadcastable against (N, J): here one free/fixed value per feature."""
+        return self.softplus(self.phi)
+
+    def log_likelihood(self, beta):
+        """Log-likelihood of Y at beta (a scalar tensor)."""
+        pi, _ = self.predict(beta, self.X)
+        return log_negbinomial(self.Y, self.s[:, None] * pi, self.dispersion(pi)).sum()
+
+    log_likelihood_beta = log_likelihood
 
     def log_beta_prior(self, beta):
-        # Flat beta is covariate-major (see log_likelihood: X @ beta.reshape(covariate_count, dim)).
+        # Flat beta is covariate-major (see predict: X @ beta.reshape(covariate_count, dim)).
         # Transpose so that column d holds covariate d and broadcasts against sd[d].
         beta_ = beta.reshape(self.covariate_count, self.dim).T
-        sd = self.softplus(self.psi)
-        log_prior1 = torch.sum(log_normal(beta_, torch.zeros_like(sd), sd/self.lam))
-        return(log_prior1)
+        sd = self.beta_prior_sd
+        return torch.sum(log_normal(beta_, torch.zeros_like(sd), sd))
 
     def log_posterior(self, beta):
-        """
-        Computes the log posterior probability of the negative binomial regression model
-        with normal prior on the regression coefficients.
-
-        Args:
-            beta (torch.Tensor): A tensor of shape (dim * covariate_count,) representing the
-                flattened regression coefficients.
-
-        Returns:
-            torch.Tensor: A scalar tensor representing the log posterior probability.
-        """
-        pi,_ = self.predict(beta, self.X)
+        pi, _ = self.predict(beta, self.X)
         log_lik = self.log_likelihood(beta)
-        sd = self.softplus(self.psi)
-        dispersion = self.softplus(self.phi)
-        # normal prior on beta -- 0 mean and sd = softplus(psi).
         log_beta_prior = self.log_beta_prior(beta)
-        # inv gamma prior on var = sd^2 -- hyper parameters specified to the model.
-        log_var_prior = torch.sum(log_invgamma(sd**2, self.beta_var_shape, self.beta_var_scale))
         log_dispersion_prior = 0
         if self.disp_model is not None:
-            # Take sample average of pi's since we only support feature wise dispersion for standard NBSR.
-            pi_bar = pi.mean(0)
-            log_dispersion_prior = torch.sum(self.disp_model.log_density(dispersion, pi_bar))
-        log_posterior = log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
-        return(log_posterior)
+            # The dispersion model acts as a log-normal prior on the free per-feature dispersions, evaluated
+            # at the sample-average composition.
+            pi_bar = pi.mean(0, keepdim=True)
+            log_dispersion_prior = torch.sum(self.disp_model.log_density(self.softplus(self.phi), pi_bar))
+        return log_lik + log_beta_prior + log_dispersion_prior
 
     def forward(self, beta):
         return self.log_posterior(beta)
 
-    def predict(self, beta, X):
-        beta_ = torch.reshape(beta, (self.covariate_count, self.dim))
-        log_unnorm_exp = torch.matmul(X, beta_)
-        if self.pivot:
-            log_unnorm_exp = torch.column_stack((log_unnorm_exp, torch.zeros(self.sample_count, device=beta.device)))
-        norm = torch.logsumexp(log_unnorm_exp, 1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:,None])
-        pi = norm_expr
-        return(pi, log_unnorm_exp)
+    # ------------------------------------------------------------------ derivatives w.r.t. beta
+    def _dispersion_terms(self, pi):
+        """phi, and the first and second derivatives of log phi_ij with respect to u_ij = log pi_ij
+        (c and c2, (N, J) or 0). Fixed/free per-feature dispersions do not depend on pi."""
+        return self.dispersion(pi), 0.0, 0.0
 
-    def log_lik_gradient_persample_tensorized(self, beta):
-        beta_ = beta.view(self.covariate_count, self.dim)
-        dispersion = self.softplus(self.phi)
-        J, N, P = self.rna_count, self.sample_count, self.covariate_count
-        device = beta.device
+    def _score_terms(self, beta, second=False):
+        pi, _ = self.predict(beta, self.X)
+        pi = pi.detach()
+        mu = self.s[:, None] * pi
+        phi, c, c2 = self._dispersion_terms(pi)
+        phi = phi.detach() if torch.is_tensor(phi) else phi
+        trended = torch.is_tensor(c)
+        l_u, l_v, l_uu, l_uv, l_vv = nb_log_density_derivatives(self.Y, mu, phi, second=second)
+        # d l_ij / d u_ij along the model, where log phi may move with u through c.
+        G = l_u + c * l_v if trended else l_u
+        if not second:
+            return pi, G, None
+        A = l_uu + 2.0 * c * l_uv + c ** 2 * l_vv + c2 * l_v if trended else l_uu
+        return pi, G, A
 
-        log_unnorm_exp = self.X @ beta_
-        if self.pivot:
-            log_unnorm_exp = torch.column_stack(
-                (log_unnorm_exp, torch.zeros(N, device=device))
-            )
-
-        norm = torch.logsumexp(log_unnorm_exp, dim=1)
-        norm_expr = torch.exp(log_unnorm_exp - norm[:, None]) # N × J
-
-        mean = self.s[:, None] * norm_expr
-        sigma2 = mean + dispersion * mean**2
-        r = 1.0 / dispersion
-        D = dispersion * mean**2 / sigma2 # N × J
-
-        # Pi is (N × J × J)
-        eye_J = torch.eye(J, device=device).unsqueeze(0).expand(N, -1, -1)
-        Pi = eye_J - norm_expr.unsqueeze(1)
-
-        # XPi is (N × J × P × J)
-        XPi = torch.einsum('np,njk->njkp', self.X, Pi)
-
-        c0 = -r * D + self.Y * (1 - D) # N × J
-        ret = torch.einsum('nj,njkp->njkp', c0, XPi) # N × J × P × J
-
-        grad = torch.sum(ret, dim=1).transpose(1, 2) # N × P × J
-
-        if self.pivot: # drop last column
-            grad = grad[:, :, :-1] # N × P × dim
-
-        grad = grad.reshape(N, self.dim * P)
-        return grad
-    
-    ### Gradient of the model
     def log_lik_gradient_persample(self, beta):
+        """(N, P*dim) gradient of each sample's log-likelihood w.r.t. the flat covariate-major beta.
+
+        d l_i / d beta_{d,k} = x_id sum_j G_ij (1[j=k] - pi_ik) = x_id (G_ik - pi_ik sum_j G_ij).
         """
-        Computes the gradient of the log-likelihood function with respect to the model parameters for each sample.
-
-        Args:
-            beta (torch.Tensor): A tensor of shape (covariate_count * dim,) containing the model parameters.
-
-        Returns:
-            torch.Tensor: A tensor of shape (sample_count, covariate_count * dim) containing the gradient of the log-likelihood function with respect to the model parameters for each sample.
-        """        
-        device = beta.device
-        dtype  = beta.dtype
-
-        N, J, P = self.sample_count, self.rna_count, self.covariate_count
-        dim = self.dim
-
-        beta_ = beta.view(P, dim)
-        dispersion = self.softplus(self.phi)
-        r = 1. / dispersion
-        grad = torch.empty(N, P * dim, device=device, dtype=dtype)
-        
-        for n in range(N):
-            x = self.X[n]
-            y = self.Y[n]
-            s = torch.sum(y)
-
-            logits = x @ beta_
-            if self.pivot:
-                # append baseline (zero) column for softmax over J classes
-                logits = torch.cat([logits, torch.zeros(1, device=device, dtype=dtype)], dim=0)
-            m  = torch.logsumexp(logits, dim=0)
-            pi = torch.exp(logits - m)    # (J,)
-
-            mean = s * pi
-            sigma2 = mean + dispersion * (mean ** 2)
-
-            t0   = (mean + 2 * dispersion * (mean ** 2)) / sigma2
-            temp = r * (1.0 - t0) + y * (2.0 - t0)     # (J,)
-
-            # res = outer(x, temp) - [sum_j temp_j] * outer(x, pi)
-            # (rank-1 correction: (I - pi 1^T) applied without J×J)
-            xt  = torch.outer(x, temp)                  # (P, J)
-            res = xt - torch.outer(x, pi) * temp.sum()  # (P, J)
-
-            # Drop the pivot column to match parameter dimension when pivoting
-            if self.pivot:
-                res = res[:, :-1]                       # (P, dim) with dim = J-1
-
-            grad[n] = res.reshape(-1)
-        return grad
+        pi, G, _ = self._score_terms(beta)
+        Gk = (G - pi * G.sum(1, keepdim=True))[:, :self.dim]                # (N, dim)
+        return torch.einsum("nd,nk->ndk", self.X, Gk).reshape(self.sample_count, -1)
 
     def log_lik_gradient(self, beta):
-        """
-        Computes the gradient of the log-likelihood function with respect to the model parameters.
-
-        Args:
-            beta (torch.Tensor): The model parameters.
-
-        Returns:
-            torch.Tensor: The gradient of the log-likelihood function with respect to the model parameters.
-        """
-        return torch.sum(self.log_lik_gradient_persample(beta), 0)
+        return self.log_lik_gradient_persample(beta).sum(0)
 
     def log_beta_prior_gradient(self, beta):
-        # Flat beta is covariate-major (see log_likelihood: X @ beta.reshape(covariate_count, dim)).
-        # Transpose so that column d holds covariate d and broadcasts against sd[d].
         beta_ = beta.reshape(self.covariate_count, self.dim).T
-        sd = self.softplus(self.psi)
-        log_prior_grad = -(self.lam**2) * beta_ / sd**2
+        log_prior_grad = -beta_ / self.beta_prior_sd ** 2
         # beta_ is (dim, covariate_count); transpose back so the flat gradient is covariate-major like beta.
-        return(log_prior_grad.T.flatten())
+        return log_prior_grad.T.flatten()
 
     def log_posterior_gradient(self, beta):
-        """
-        Computes the gradient of the log posterior distribution with respect to the model parameters.
-
-        Args:
-            beta (torch.Tensor): A tensor of shape (dim * covariate_count,) representing the model parameters.
-
-        Returns:
-            torch.Tensor: A tensor of the same shape as `beta` representing the gradient of the log posterior distribution.
-        """
-        log_prior_grad = self.log_beta_prior_gradient(beta)
-        
-        log_lik_grad = self.log_lik_gradient(beta)
-        return log_lik_grad + log_prior_grad
+        return self.log_lik_gradient(beta) + self.log_beta_prior_gradient(beta)
 
     def log_likelihood_hessian(self, beta):
-        """Closed-form Hessian of the log-likelihood w.r.t. the flat beta (covariate-major), on beta's device."""
-        pi = self.predict(beta, self.X)[0].detach()
-        phi = self.softplus(self.phi.detach())
-        Y = self.Y.to(pi.dtype)
-        mu = self.s[:, None].to(pi.dtype) * pi
-        D = phi * mu ** 2 / (mu + phi * mu ** 2)
-        r = 1.0 / phi
-        grad_w = r * D - Y * (1.0 - D)
-        hess_w = r * D * (1.0 - D) + Y * (1.0 - D) * D
-        return kron_hessian(self.X, pi, A=-hess_w, B=grad_w, dim=self.dim)
+        """Closed-form Hessian of the log-likelihood w.r.t. the flat beta (covariate-major), on beta's device.
+
+        d^2 l_ij / d eta_ik d eta_ik' = A_ij (1[j=k]-pi_ik)(1[j=k']-pi_ik') - G_ij pi_ik (1[k=k']-pi_ik'),
+        which utils.kron_hessian sums over j and i.
+        """
+        pi, G, A = self._score_terms(beta, second=True)
+        return kron_hessian(self.X, pi, A=A, B=-G, dim=self.dim)
 
     def log_posterior_hessian(self, beta):
         H_lik = self.log_likelihood_hessian(beta)
         # Flat beta is covariate-major (index d*dim + k), so covariate d's sd repeats dim times consecutively.
-        sd = self.softplus(self.psi.detach()).repeat_interleave(self.dim).to(H_lik.dtype)
-        # log N(beta; 0, sd/lam) has Hessian -lam^2/sd^2 on the diagonal.
-        return H_lik - torch.diag(self.lam ** 2 / sd ** 2)
+        sd = self.beta_prior_sd.repeat_interleave(self.dim).to(H_lik.dtype)
+        # log N(beta; 0, sd) has Hessian -1/sd^2 on the diagonal.
+        return H_lik - torch.diag(1.0 / sd ** 2)

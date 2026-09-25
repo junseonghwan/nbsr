@@ -39,14 +39,10 @@ def generate_data(d, N, J):
     return(Y, X, phi)
 
 def set_distinct_sd(model):
-    """Give each covariate a different prior sd on beta.
-
-    psi is initialised so that every covariate has sd = 1. With equal sd the
-    layout of beta inside the prior cannot matter, so the prior and its
-    gradient must also be tested with distinct sd values.
-    """
+    """Give each covariate a different prior sd on beta: with equal sd the layout of beta inside the
+    prior cannot matter, so the prior and its gradient must also be tested with distinct values."""
     with torch.no_grad():
-        model.psi.copy_(torch.linspace(-1.0, 2.0, model.covariate_count, dtype=torch.float64))
+        model.beta_prior_sd.copy_(torch.linspace(0.5, 2.0, model.covariate_count, dtype=torch.float64))
 
 class TestNBSRGradients(unittest.TestCase):
 
@@ -60,7 +56,7 @@ class TestNBSRGradients(unittest.TestCase):
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
-                                                    lam=1., shape=3., scale=2.,
+                                                    beta_prior_sd=1.0,
                                                     dispersion = phi, pivot=False)
         z = model.log_likelihood(model.beta)
         if model.beta.grad is not None:
@@ -107,7 +103,7 @@ class TestNBSRGradients(unittest.TestCase):
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
-                                                    lam=1., shape=3., scale=2.,
+                                                    beta_prior_sd=1.0,
                                                     dispersion = phi, pivot=True)
         z = model.log_likelihood(model.beta)
         if model.beta.grad is not None:
@@ -141,7 +137,7 @@ class TestNBSRGradients(unittest.TestCase):
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
-                                                    lam=1., shape=3., scale=2.,
+                                                    beta_prior_sd=1.0,
                                                     dispersion = phi, pivot=False)
         set_distinct_sd(model)
         z = model.log_beta_prior(model.beta)
@@ -164,7 +160,7 @@ class TestNBSRGradients(unittest.TestCase):
         #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
         #X_df = pd.DataFrame(X)
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
-                                                    lam=1., shape=3., scale=2.,
+                                                    beta_prior_sd=1.0,
                                                     dispersion = phi, pivot=False)
         set_distinct_sd(model)
         z = model.log_posterior(model.beta)
@@ -189,45 +185,18 @@ class TestNBSRGradients(unittest.TestCase):
         N = 20
         J = 8
         (Y, X, phi) = generate_data(d, N, J)
-    
-        #Y_df = pd.DataFrame(Y.transpose(), dtype="int32")
-        #X_df = pd.DataFrame(X)
-        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y), 
-                                                    lam=1., shape=3., scale=2.,
+        model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y),
+                                                    beta_prior_sd=1.0,
                                                     dispersion = phi, pivot=False)
-
-        log_lik_grad = model.log_lik_gradient(model.beta)
-        hess_expected = torch.zeros(log_lik_grad.size(0), model.beta.size(0))
-        start = time.perf_counter()
-        # Compute the gradient for each component of y w.r.t. beta
-        for k in range(log_lik_grad.size(0)):
-            # Zero previous gradient
-            if model.beta.grad is not None:
-                model.beta.grad.zero_()
-
-            # Backward on the k-th component of y
-            log_lik_grad[k].backward(retain_graph=True)
-
-            # Store the gradient
-            hess_expected[k,:] = model.beta.grad
-        end = time.perf_counter()
-        print("Elapsed with torch = {}s".format((end - start)))
-
-        # hess_realized = torch.sum(model.log_lik_hessian_persample(model.beta),0).data.numpy()
-        # print(hess_expected.data.numpy()[0,:])
-        # print(hess_realized[0,:])
-        # self.assertTrue(np.allclose(hess_expected, hess_realized))
-
-        # Compute Hessian using numba.
-        pi = model.predict(model.beta, model.X)[0].data.numpy()
-        s = np.sum(model.Y.data.numpy(), 1)
-        mu = s[:,None] * pi
-        start = time.perf_counter()
-        hess_realized = reference_hessians.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
-        end = time.perf_counter()
-        print("Elapsed with numba compilation = {}s".format((end - start)))
-        #print(hess_realized[0,:])
+        beta = model.beta.detach().clone()
+        hess_expected = torch.autograd.functional.hessian(model.log_likelihood, beta).numpy()
+        # closed form (Kronecker structure) and the loop reference must both match autograd.
+        hess_realized = model.log_likelihood_hessian(beta).numpy()
         self.assertTrue(np.allclose(hess_expected, hess_realized))
+        pi = model.predict(beta, model.X)[0].numpy()
+        mu = np.sum(Y, 1)[:, None] * pi
+        hess_loop = reference_hessians.hessian_nbsr(X, Y, pi, mu, phi, model.pivot)
+        self.assertTrue(np.allclose(hess_expected, hess_loop))
 
     def test_log_posterior_hessian(self):
         print("==============Testing posterior Hessian (likelihood + beta prior)==============")
@@ -236,7 +205,7 @@ class TestNBSRGradients(unittest.TestCase):
         J = 5
         (Y, X, phi) = generate_data(d, N, J)
         model = nbm.NegativeBinomialRegressionModel(torch.tensor(X), torch.tensor(Y),
-                                                    lam=2., shape=3., scale=2.,
+                                                    beta_prior_sd=1.0,
                                                     dispersion = phi, pivot=False)
         set_distinct_sd(model)
         beta = model.beta.detach().clone()
@@ -253,9 +222,9 @@ class TestNBSRTrendedGradients(unittest.TestCase):
         (Y, X, phi) = generate_data(d, N, J)
     
         tensorY = torch.tensor(Y)
-        disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, lam=1., shape=3., scale=2.)
-        z = model.log_likelihood2(model.beta)
+        disp_model = dm.DispersionModel(tensorY.shape[1])
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model)
+        z = model.log_likelihood_beta(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
@@ -272,9 +241,9 @@ class TestNBSRTrendedGradients(unittest.TestCase):
         (Y, X, phi) = generate_data(d, N, J)
     
         tensorY = torch.tensor(Y)
-        disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, lam=1., shape=3., scale=2., pivot=True)
-        z = model.log_likelihood2(model.beta)
+        disp_model = dm.DispersionModel(tensorY.shape[1])
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, beta_prior_sd=1.0, pivot=True)
+        z = model.log_likelihood_beta(model.beta)
         if model.beta.grad is not None:
             model.beta.grad.zero_()
         z.backward(retain_graph=True)
@@ -291,8 +260,8 @@ class TestNBSRTrendedGradients(unittest.TestCase):
         (Y, X, phi) = generate_data(d, N, J)
     
         tensorY = torch.tensor(Y)
-        disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, lam=1., shape=3., scale=2.)
+        disp_model = dm.DispersionModel(tensorY.shape[1])
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model)
         set_distinct_sd(model)
         z = model.log_posterior(model.beta)
         if model.beta.grad is not None:
@@ -311,8 +280,8 @@ class TestNBSRTrendedGradients(unittest.TestCase):
         (Y, X, phi) = generate_data(d, N, J)
 
         tensorY = torch.tensor(Y)
-        disp_model = dm.DispersionModel(tensorY)
-        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model, lam=2., shape=3., scale=2.)
+        disp_model = dm.DispersionModel(tensorY.shape[1])
+        model = nbsrd.NBSRTrended(torch.tensor(X), tensorY, disp_model=disp_model)
         set_distinct_sd(model)
         beta = model.beta.detach().clone()
         hess_expected = torch.autograd.functional.hessian(model.log_posterior, beta).detach().numpy()

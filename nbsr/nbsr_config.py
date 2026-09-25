@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 import json
 
@@ -10,17 +10,32 @@ class NBSRConfig():
     column_names: list[str]
 
     # Optional variables
-    z_columns: list[str] | None = None
+    z_columns: list[str] | None = None  # external covariates of the dispersion model (columns of X.csv)
+    z_log: bool = False                  # log-transform z_columns before use
+    # Priors of the dispersion model (nbsr/dispersion.py).
+    b_pi_prior_mean: float = 1.0
+    b_pi_prior_sd: float = 0.1
+    sigma_bj_prior_sd: float = 0.5
+    sigma_b: float = 1.0                 # prior sd of the coefficients on z_columns
+    dispersion_link: str = "logit"       # "logit" (NBSR-HMC) or "log" (previous NBSR model)
+    feature_offsets: bool = True         # per-feature offsets b_j in the dispersion model
+    z_total_counts: bool = False         # add log(sum_j Y_ij) as an external dispersion covariate
     lr:    float = 0.05
-    lam:   float = 1.0
-    shape: float = 3.0
-    scale: float = 2.0
     iterations: int = 10000
     estimate_dispersion_sd: bool = False
     trended_dispersion:     bool = False
     dispersion_path:        Path | None = None
     dispersion_model_file:  str | None = None # we will look for output_path / dispersion_model_file
+    update_dispersion:      bool = False  # optimise a pre-fitted dispersion model jointly with beta.
     pivot:  bool = False
+    beta_prior_sd: list[float] | None = None  # prior sd of beta per covariate (intercept first). None = "empirical":
+                                         #   a stage-1 fit with a wide prior, then per-covariate sd matched to the
+                                         #   upper quantile of |beta| (DESeq2-style), then the main fit with it fixed.
+    beta_prior: str = "empirical"        # "empirical" or "fixed" (beta_prior_sd given); set by the CLI, informational
+    stage1_iterations: int | None = None # iterations of the stage-1 fit (default: half of iterations)
+    stage1_prior_sd: float = 10.0        # prior sd of every covariate in the stage-1 fit
+    prior_quantile: float = 0.95         # |beta| quantile matched to the prior's tail
+    init_from: Path | None = None        # checkpoint whose beta and dispersion parameters initialise the fit
     use_cuda_if_available: bool = True
 
     def dump_json(self, file: str | Path):
@@ -31,6 +46,15 @@ class NBSRConfig():
     @classmethod
     def load_json(cls, file: str | Path):
         data = json.load(open(file))
+        known = {f.name for f in fields(cls)}
+        dropped = sorted(set(data) - known)
+        if dropped:
+            print(f"config.json: ignoring fields no longer used: {dropped}")
+        if "dispersion_link" not in data and data.get("trended_dispersion"):
+            # Written by the previous version: its trended model is the log-link, no-offset, log-total-counts form.
+            data.update(dispersion_link="log", feature_offsets=False, z_total_counts=True)
+            print("config.json: previous trended dispersion model -> link=log, no feature offsets, log total counts")
+        data = {k: v for k, v in data.items() if k in known}
         data["counts_path"]  = Path(data["counts_path"])
         data["coldata_path"] = Path(data["coldata_path"])
         if data.get("dispersion_path") is not None:

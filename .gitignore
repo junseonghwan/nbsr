@@ -1,4 +1,24 @@
+# NBSR / featurewise outputs written next to the input data
+data/**/run*/
+data/**/checkpoint.pth
+data/**/hessian.npy
+data/**/covariance.pth
+data/**/config.json
+data/**/disp_model.pth
+data/**/nbsr_*.csv
+data/**/nbsr_results.h5
+data/**/eb_dispersion.csv
+data/**/*.h5ad
+data/**/*.npy
+data/**/*.pt
+data/immune_data/
+data/all/100S_0S/
 data/test/output/
+# Scratch
+notebooks/
+.Rhistory
+*.Rproj
+.ipynb_checkpoints/
 .vscode/
 
 # Byte-compiled / optimized / DLL files
@@ -131,3 +151,5 @@ dmypy.json
 .pyre/
 .Rproj.user
 
+# Local analysis drivers (simulation grids, one-off runs); the benchmark repository is their home.
+scratch/
