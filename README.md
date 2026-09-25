@@ -77,6 +77,20 @@ each run, and copies the best run to `/path/to/data`.
 A `dispersion.csv` in the data directory (one value per feature) switches to fixed dispersions and ignores the
 dispersion options.
 
+### Prior on the coefficients
+
+`beta ~ N(0, sd_d)` with one sd per covariate. Three ways to set it:
+
+- `--beta_prior learn` (default): sd learned jointly with beta under an inverse-gamma(`--shape`, `--scale`)
+  hyperprior, scaled by `--lam`. With sparse signal (most features unchanged) the joint mode collapses to
+  the spread of the null coefficients, which over-shrinks real effects.
+- `--beta_prior empirical`: DESeq2-style two-stage fit. A stage-1 fit with a wide prior (sd 10, half the
+  iterations, in `stage1/`), then the sd of each covariate is set so that the prior's upper tail matches the
+  precision-weighted `--prior_quantile` (default 0.95) of |beta| across features, and the main fit runs with
+  those sds fixed, warm-started from stage 1. The matched sds are printed and stored in `config.json`.
+- `--beta_prior_sd SD [SD ...]`: fixed sd, one value or one per covariate (intercept first), as `sigma_beta2`
+  given as data in the Stan model.
+
 ### Small sample sizes: empirical Bayes
 
 With few samples per condition, first obtain fitted means from DESeq2, then fit the dispersion model to

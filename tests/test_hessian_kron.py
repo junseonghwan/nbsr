@@ -150,3 +150,15 @@ def test_callable_link_matches_builtin_logit():
     pi = torch.rand(4, Y.shape[1], dtype=torch.float64) * 0.9 + 0.01
     for a, b in zip(builtin.link_derivatives(pi), custom.link_derivatives(pi)):
         torch.testing.assert_close(a, b)
+
+
+def test_empirical_prior_sd_matches_quantile():
+    """With equal precision the matched sd is the 95% quantile of |beta| over 1.96; |beta| > 10 is dropped."""
+    rng = np.random.default_rng(0)
+    P, dim = 2, 400
+    b = np.stack([rng.normal(0, 2.0, dim), rng.normal(0, 0.3, dim)])
+    b[1, :3] = 50.0                                   # non-converged coefficients must not widen the prior
+    H = np.eye(P * dim) * 4.0                         # equal precision -> equal weights
+    sds = main.empirical_prior_sd(b.reshape(-1), H, P, quantile=0.95)
+    for d, expected in enumerate([np.quantile(np.abs(b[0]), 0.95), np.quantile(np.abs(b[1, 3:]), 0.95)]):
+        assert abs(sds[d] - expected / 1.959964) < 0.05 * expected / 1.959964

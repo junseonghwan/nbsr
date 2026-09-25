@@ -32,6 +32,13 @@ class NBSRConfig():
     update_dispersion:      bool = False  # optimise a pre-fitted dispersion model jointly with beta.
     pivot:  bool = False
     beta_prior_sd: list[float] | None = None  # fixed prior sd per covariate; None = learn by empirical Bayes (psi)
+    beta_prior: str = "learn"            # "learn" (psi by joint MAP), "fixed" (beta_prior_sd given), or "empirical":
+                                         #   a stage-1 fit with a wide prior, then per-covariate sd matched to the
+                                         #   upper quantile of |beta| (DESeq2-style), then the main fit.
+    stage1_iterations: int | None = None # iterations of the stage-1 fit (default: half of iterations)
+    stage1_prior_sd: float = 10.0        # prior sd of every covariate in the stage-1 fit
+    prior_quantile: float = 0.95         # |beta| quantile matched to the prior's tail
+    init_from: Path | None = None        # checkpoint whose beta and dispersion parameters initialise the fit
     use_cuda_if_available: bool = True
 
     def dump_json(self, file: str | Path):
