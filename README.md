@@ -51,89 +51,92 @@ Gradients and Hessians of the log posterior are in closed form (`utils.kron_hess
 model with a few hundred features takes well under a second; it is a dense `(P * J)^2` matrix, so the
 approach targets panels of hundreds to a few thousand features.
 
-## Fitting
+## Workflow
+
+Two stages, run by two commands (or `train`, which runs both):
 
 ```
-python nbsr/main.py train /path/to/data var1 var2 [options]
+python nbsr/main.py prior DATA var1 [var2 ...] [options]    # stage 1 -> DATA/prior/prior.json
+python nbsr/main.py fit   DATA var1 [var2 ...] --prior DATA/prior/prior.json [options]
+python nbsr/main.py results DATA var1 level_numerator level_denominator [options]
 ```
 
-Fits the posterior mode by Adam, writes `nbsr_beta.csv`, `nbsr_beta_sd.csv`, `nbsr_pi.csv`,
-`nbsr_dispersion.csv`, the dispersion model parameters (`nbsr_dispersion_params.csv`, `nbsr_dispersion_bj.csv`,
-`nbsr_dispersion_bw.csv`), `checkpoint.pth`, `config.json` and `hessian.npy` into `/path/to/data/runK` for
-each run, and copies the best run to `/path/to/data`.
+**Stage 1, `prior`: empirical prior elicitation.** A diffuse fit (prior sd `--stage1_prior_sd`, default 10, on
+every covariate, at `--stage1_iterations`, default half of `-i`) gives near-maximum-likelihood coefficients and
+their standard errors; for each covariate the prior sd is then set so that a zero-centred normal's upper tail
+matches the precision-weighted `--prior_quantile` (default 0.95) of |beta| across features (the DESeq2
+recipe). `prior.json` records the sds, their squares as `sigma_beta2` for the Stan model, the fitted
+dispersion-model parameters, and the path of the diffuse fit's checkpoint used as a warm start.
+The sd is deliberately not learned jointly with `beta`: the joint mode collapses to the spread of the null
+coefficients and over-shrinks the real effects.
+
+With few samples per condition (3 to 5) the joint fit of the dispersion model is unstable. `--dispersion_from
+deseq2` fits the dispersion model at the composition implied by PyDESeq2's fitted means (`--eb_iterations`,
+`--eb_lr`), saves it as `prior/disp_model.pth`, and marks it in `prior.json` so that `fit` holds it fixed.
+
+**Stage 2, `fit`: inference at fixed prior sds.** Takes the sds (and warm start, and fixed dispersion model
+if any) from `--prior prior.json`, or fixed values from `--beta_prior_sd SD [SD ...]` (one value, or one per
+covariate with the intercept first; `--beta_prior_sd 1` matches `sigma_beta2 = 1` in the Stan model). Writes
+`nbsr_beta.csv`, `nbsr_beta_sd.csv` (the prior sds used), `nbsr_pi.csv`, `nbsr_dispersion.csv`, the
+dispersion-model parameters (`nbsr_dispersion_params.csv`, `nbsr_dispersion_bj.csv`, `nbsr_dispersion_bw.csv`),
+`checkpoint.pth`, `config.json` and `hessian.npy` into `DATA` (or `--out`). `-r N` runs N initialisations and
+keeps the best log posterior.
+
+Options shared by `prior`, `fit` and `train`:
 
 | option | default | meaning |
 |---|---|---|
 | `-i, --iterations` | 10000 | Adam iterations |
 | `-l, --lr` | 0.05 | learning rate (values above 0.2 are rarely stable) |
-| `-r, --runs` | 1 | independent initialisations; the best log posterior is kept |
-| `--trended_dispersion` | off | use `NBSRTrended` (recommended from about 10 samples per condition) |
-| `--z_columns NAME` | none | columns of `X.csv` used as external dispersion covariates `W` (repeat the flag for several) |
+| `--trended_dispersion` / `--free_dispersion` | trended | dispersion model `b_0 + b_j + b_pi f(pi) + w'b_w`, or one free dispersion per feature |
+| `--z_columns NAME` | none | columns of `X.csv` used as external dispersion covariates `W` (repeat for several) |
 | `--z_log` | off | log-transform the `--z_columns` first (e.g. library sizes, capture rates) |
-| `--dispersion_model_file FILE` | none | load a fitted dispersion model (`disp_model.pth` from `eb`) and hold it fixed |
-| `--estimate_dispersion_sd` | off | estimate a per-feature sd for the log-normal dispersion prior |
-| `--beta_prior_sd SD [SD ...]` | empirical | fix the prior sd of `beta`, one value or one per covariate (intercept first) |
-| `--stage1_prior_sd`, `--stage1_iterations`, `--prior_quantile` | 10, half of `-i`, 0.95 | settings of the empirical prior's stage-1 fit and quantile matching |
-| `--pivot` | off | reference-category parameterisation |
+| `--z_total_counts` | off | add log total counts per sample as a dispersion covariate |
+| `--dispersion_link` | logit | `f`: `logit` (NBSR-HMC) or `log` |
+| `--no_feature_offsets` | off | drop the per-feature offsets `b_j` |
+| `--b_pi_prior`, `--sigma_bj_prior_sd`, `--sigma_b` | (1, 0.1), 0.5, 1 | priors of the dispersion model |
+| `--dispersion_model_file FILE` | none | load a fitted dispersion model and hold it fixed (`--update_dispersion` to optimise it) |
+| `--pivot` | off | reference-category parameterisation (last feature's coefficients fixed at zero, as in the Stan model) |
 
-A `dispersion.csv` in the data directory (one value per feature) switches to fixed dispersions and ignores the
-dispersion options.
-
-### Prior on the coefficients
-
-`beta ~ N(0, sd_d)` with one fixed sd per covariate. By default the sd is set empirically, DESeq2-style:
-a stage-1 fit with a wide prior (`--stage1_prior_sd`, default 10, at half the iterations, written to
-`stage1/`), then for each covariate the sd of a zero-centred normal whose upper tail matches the
-precision-weighted `--prior_quantile` (default 0.95) of |beta| across features, then the main fit with those
-sds fixed, warm-started from stage 1. The matched sds are printed, written to `nbsr_beta_sd.csv`, and stored in
-`config.json`. `--beta_prior_sd` skips stage 1 and fixes the sd directly, as `sigma_beta2` given as data in
-the Stan model.
-
-The sd is deliberately not learned jointly with `beta`: the joint mode collapses to the spread of the null
-coefficients (about 0.1 on the total-imbalance simulations, where nearly every feature is unchanged), which
-over-shrinks the real effects and can be bimodal across runs.
-
-### Small sample sizes: empirical Bayes
-
-With few samples per condition, first obtain fitted means from DESeq2, then fit the dispersion model to
-them, then fit NBSR with that dispersion model held fixed:
-
-```
-Rscript scripts/deseq2.R /path/to/data var1,var2      # writes deseq2_mu.csv
-python nbsr/main.py eb /path/to/data var1 var2 [options]
-```
-
-`eb` takes the `train` options plus `-f, --mu_file` (default `deseq2_mu.csv`), `--eb_iter` and `--eb_lr` for
-the dispersion-model fit, and `--update_dispersion` to keep optimising the dispersion model jointly with
-`beta` in the second stage. It writes its outputs directly into `/path/to/data`.
+The previous dispersion model `b0 + b1 log pi + b2 log R_i` is the configuration `--dispersion_link log
+--no_feature_offsets --z_total_counts --b_pi_prior 0 0.1 --sigma_b 0.1`. A `dispersion.csv` in the data
+directory (one value per feature) switches to fixed dispersions.
 
 ## Inference
 
 ```
-python nbsr/main.py results /path/to/data var1 level_numerator level_denominator
+python nbsr/main.py results DATA var1 level_numerator level_denominator [--ref_top_frac 0.1] [--laplace_draws 2000]
 ```
 
-creates `/path/to/data/var1__level_numerator_vs_level_denominator/` containing
+creates `DATA/var1__level_numerator_vs_level_denominator/` containing
 
-- `nbsr_results.h5` with `logRR`, `se`, `stat`, `pvalue`, `padj` (features x samples; identical across samples
-  when `var1` is the only covariate),
-- `nbsr_results.csv` with `log2FC`, `pvalue`, `padj` per feature when the contrast does not vary by sample,
-- `covariance.pth`, the per-sample covariance of `logRR` across features (skip with `--skip_cov`).
+- `contrast.csv`, one row per feature: the reference-free CLR contrast `delta_clr` (the coefficient
+  difference between the two levels, centred across features, so it does not depend on the pivot) and its
+  standard error from the Hessian; the compositional shift, the mode of `delta_clr` over the reference set
+  (all features, or the top `--ref_top_frac` by pooled fitted proportion with a floor of `--ref_min`), and
+  the absolute-abundance effect `delta_adj = delta_clr - shift` with Wald `z`, `pvalue`, BH `padj` and the
+  posterior sign probability `ppos = Phi(z)`; with `--laplace_draws S`, draws of `beta` from the Laplace
+  approximation in which the shift is recomputed per draw give `post_mean`, `post_sd`, `q025`, `q975`,
+  `ppos_draws` and `lfsr_draws`, so the shift's uncertainty and its covariance with each effect are included.
+- `contrast_summary.json`: the shift, the reference-set size, and the shift's spread across draws.
+- `nbsr_results.h5` and `nbsr_results.csv`: per-sample log relative-abundance ratios with Wald tests
+  (`--absolute_fc` subtracts the shift from them too) and `covariance.pth`, the per-sample covariance of the
+  ratios across features (`--skip_cov` to omit).
 
 Standard errors come from the Cholesky factor of the negative Hessian; `--recompute_hessian` recomputes it
-from the checkpoint instead of reading `hessian.npy`. `--absolute_fc` subtracts the mode of the `logRR`
-distribution (the compositional shift) before testing.
+from the checkpoint instead of reading `hessian.npy`.
 
 ## Example
 
 ```
-python nbsr/main.py train data/test trt -i 10000 --trended_dispersion
-python nbsr/main.py results data/test trt alt null
+python nbsr/main.py train data/test trt -i 10000 --pivot
+python nbsr/main.py results data/test trt alt null --ref_top_frac 0.1 --laplace_draws 2000
 ```
 
 `data/test` has 200 features and 20 samples with one two-level covariate `trt` (`null` vs `alt`), generated by
 `scripts/generate_data.R`. `scripts/de.R` shows how the outputs are read in R for a differential-expression
-analysis.
+analysis. Fits from earlier versions of the package (checkpoints, `disp_model.pth`, `config.json`) are still
+read by `results`.
 
 ## Feature-wise NB regression
 
