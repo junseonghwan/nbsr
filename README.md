@@ -7,7 +7,7 @@ log relative-abundance ratios between covariate levels, with standard errors fro
 posterior at the mode. The package also contains a feature-wise NB regression (`nbsr.fnb_stats`) used for
 method comparisons.
 
-Paper: https://doi.org/10.1101/2024.05.07.592964
+Paper: https://doi.org/10.1093/biostatistics/kxag012
 
 ## Installation
 
@@ -146,6 +146,9 @@ experimental and not part of the command line.
 
 ## Citation
 
-Jun et al., "Negative binomial softmax regression for differential abundance analysis of miRNA-seq data",
-bioRxiv 2024, doi: https://doi.org/10.1101/2024.05.07.592964. Figures of the paper:
-https://github.com/junseonghwan/nbsr-experiments/.
+If you use NBSR, please cite:
+
+Jun S-H, Halushka MK, McCall MN. NBSR: a negative binomial softmax regression model for microRNA-seq data
+analysis. *Biostatistics* 27(1): kxag012, 2026. https://doi.org/10.1093/biostatistics/kxag012
+
+Code reproducing the paper's figures: https://github.com/junseonghwan/nbsr-experiments/
