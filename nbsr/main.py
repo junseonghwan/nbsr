@@ -190,8 +190,8 @@ def construct_model(config):
 	print("Parameters being optimized:")
 	for name, param in model.named_parameters():
 		print(name)
-		if "disp_model" in name and dispersion_model_path is not None: # don't optimize disp_model parameters.
-			continue
+		if "disp_model" in name and dispersion_model_path is not None and not config.update_dispersion:
+			continue  # a pre-fitted dispersion model is held fixed unless update_dispersion is set.
 		param_list.append(param)
 
 	#model.specify_beta_prior(config.lam, config.shape, config.scale)
@@ -256,11 +256,7 @@ def run(config):
 	pi, _ = model.predict(model.beta, model.X)
 	if isinstance(model, NBSRTrended):
 		phi = torch.exp(model.disp_model(pi))
-		np.savetxt(output_path / "nbsr_dispersion_b0.csv", model.disp_model.b0.data.numpy().transpose(), delimiter=',')
-		np.savetxt(output_path / "nbsr_dispersion_b1.csv", model.disp_model.b1.data.numpy().transpose(), delimiter=',')
-		np.savetxt(output_path / "nbsr_dispersion_b2.csv", model.disp_model.b2.data.numpy().transpose(), delimiter=',')
-		if config.estimate_dispersion_sd:
-			np.savetxt(output_path / "nbsr_dispersion_sd.csv", model.disp_model.get_sd().data.numpy().transpose(), delimiter=',')
+		save_dispersion_model_outputs(model.disp_model, output_path)
 	else:
 		phi = model.softplus(model.phi)
 
@@ -277,6 +273,15 @@ def run(config):
 	np.save(output_path / hessian_filename, I.detach().cpu().numpy())
 
 	return(curr_loss_history, model)
+
+def save_dispersion_model_outputs(disp_model, output_path):
+	"""Write the dispersion model's parameters as csv files next to the other outputs."""
+	output_path = Path(output_path)
+	np.savetxt(output_path / "nbsr_dispersion_b0.csv", disp_model.b0.data.numpy().transpose(), delimiter=',')
+	np.savetxt(output_path / "nbsr_dispersion_b1.csv", disp_model.b1.data.numpy().transpose(), delimiter=',')
+	np.savetxt(output_path / "nbsr_dispersion_b2.csv", disp_model.b2.data.numpy().transpose(), delimiter=',')
+	if disp_model.estimate_sd:
+		np.savetxt(output_path / "nbsr_dispersion_sd.csv", disp_model.get_sd().data.numpy().transpose(), delimiter=',')
 
 def _safe_name(x):
     """Convert arbitrary string to filesystem-safe name."""
@@ -376,114 +381,62 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 @click.option('--update_dispersion', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
 def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, update_dispersion, pivot):
-
+	"""Empirical-Bayes workflow: fit the dispersion model to DESeq2's fitted means, then run NBSR with
+	that dispersion model (fixed unless --update_dispersion)."""
 	data_path = Path(data_path)
-	# Read in the mean expression.
-	# Optimize NBSREmpiricalBayes to get MLE dispersions.
-	# Fit GRBF with phi_mle ~ f(mu_bar).
-	# Obtain the mean dispersion and use it for fitting NBSR and output it to file.
-	print("Performing Empirical Bayes estimation of dispersion.")
 	column_names = list(vars)
-	mu_hat = pd.read_csv(data_path / mu_file)
-	mu_hat = torch.tensor(mu_hat.transpose().to_numpy())
-	counts_pd = pd.read_csv(data_path / "Y.csv", index_col=0) # first column is just the name of the miRNAs.
-	if os.path.exists(data_path / "X.csv"):
-		coldata_pd = pd.read_csv(data_path / "X.csv", na_filter=False, skipinitialspace=True)
-	else:
-		coldata_pd = None
-	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)  # float32 cannot represent counts above 2^24 exactly
-	X, x_map = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
-	disp_model_path = "disp_model.pth"
 	config = NBSRConfig(counts_path=data_path / "Y.csv",
 						coldata_path=data_path / "X.csv",
-						output_path=data_path, # output to where the data is.
+						output_path=data_path,  # output to where the data is.
 						column_names=column_names,
 						z_columns=None,
 						lr=lr,
+						iterations=iterations,
 						lam=lam,
 						shape=shape,
 						scale=scale,
 						estimate_dispersion_sd=estimate_dispersion_sd,
 						trended_dispersion=True,
-						dispersion_model_file=disp_model_path,
-						pivot=pivot
-						)
-	
+						dispersion_model_file="disp_model.pth",
+						update_dispersion=update_dispersion,
+						pivot=pivot)
+
+	print("Performing Empirical Bayes estimation of dispersion.")
+	mu_hat = torch.tensor(pd.read_csv(data_path / mu_file).transpose().to_numpy(), dtype=torch.float64)
 	pi_hat = mu_hat / mu_hat.sum(dim=1, keepdim=True)
-
+	counts_pd = pd.read_csv(config.counts_path, index_col=0)
+	coldata_pd = pd.read_csv(config.coldata_path, na_filter=False, skipinitialspace=True) if os.path.exists(config.coldata_path) else None
+	Y = torch.tensor(counts_pd.transpose().to_numpy(), dtype=torch.float64)
+	X, _ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
 	disp_model = DispersionModel(Y, estimate_sd=estimate_dispersion_sd)
-	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model, lam=config.lam, shape=config.shape, scale=config.scale, pivot=pivot)
-	optimizer = torch.optim.Adam(nbsr_model.disp_model.parameters(),lr=eb_lr)
-	print("Optimizing NBSR dispersion parameters given DESeq2 mean expression levels.")
-	for i in range(eb_iter):
-		phi = torch.exp(nbsr_model.disp_model.forward(pi_hat))
-		log_prior = nbsr_model.disp_model.log_prior()
-		loss = -(nbsr_model.log_likelihood(pi_hat, phi) + log_prior)
-		if loss.isnan():
-			print("nan")
-			break
-		optimizer.zero_grad()
-		loss.backward(retain_graph=True)
-		optimizer.step()
-		if i % 100 == 0:
-			print("Iter:", i)
-			print(loss.data)
+	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot)
+	fit_dispersion_model(nbsr_model, pi_hat, eb_iter, eb_lr)
 
-	phi = torch.exp(nbsr_model.disp_model.forward(pi_hat))
+	phi = torch.exp(disp_model.forward(pi_hat))
 	np.savetxt(data_path / "eb_dispersion.csv", phi.data.numpy().transpose(), delimiter=',')
-	np.savetxt(data_path / "nbsr_dispersion_b0.csv", nbsr_model.disp_model.b0.data.numpy().transpose(), delimiter=',')
-	np.savetxt(data_path / "nbsr_dispersion_b1.csv", nbsr_model.disp_model.b1.data.numpy().transpose(), delimiter=',')
-	np.savetxt(data_path / "nbsr_dispersion_b2.csv", nbsr_model.disp_model.b2.data.numpy().transpose(), delimiter=',')
-	torch.save(disp_model, config.output_path / disp_model_path)
+	save_dispersion_model_outputs(disp_model, data_path)
+	torch.save(disp_model, data_path / config.dispersion_model_file)
 
-	# Fit NBSR parameters but do not update the dispersion parameters.
-	if update_dispersion:
-		param_list = nbsr_model.named_parameters()
-	else:
-		param_list = []
-		for name, param in nbsr_model.named_parameters():
-			if "disp_model" in name:
-				continue
-			param_list.append(param)
+	print("Optimizing NBSR parameters with the dispersion model" + (" (updated jointly)." if update_dispersion else " held fixed."))
+	run(config)
 
-	#nbsr_model.specify_beta_prior(lam, shape, scale)
-	optimizer = torch.optim.Adam(param_list,lr=lr)
-	print("Optimizing NBSR parameters given DESeq2 mean expression levels.")
+def fit_dispersion_model(nbsr_model, pi_hat, iterations, lr):
+	"""Fit the dispersion model's parameters by maximizing the NB log-likelihood of the counts at the given
+	composition pi_hat (e.g. from DESeq2 fitted means) plus the dispersion model's prior."""
+	disp_model = nbsr_model.disp_model
+	optimizer = torch.optim.Adam(disp_model.parameters(), lr=lr)
 	for i in range(iterations):
-		loss = -nbsr_model.log_posterior(nbsr_model.beta)
+		phi = torch.exp(disp_model.forward(pi_hat))
+		loss = -(nbsr_model.log_likelihood(pi_hat, phi) + disp_model.log_prior())
 		if loss.isnan():
 			print("nan")
 			break
 		optimizer.zero_grad()
-		loss.backward(retain_graph=True)
+		loss.backward()
 		optimizer.step()
 		if i % 100 == 0:
 			print("Iter:", i)
 			print(loss.data)
-
-	pi, _ = nbsr_model.predict(nbsr_model.beta, nbsr_model.X)
-	phi = torch.exp(nbsr_model.disp_model.forward(pi))
-	np.savetxt(data_path / "nbsr_beta.csv", nbsr_model.beta.data.numpy().transpose(), delimiter=',')
-	np.savetxt(data_path / "nbsr_beta_sd.csv", nbsr_model.softplus(nbsr_model.psi.data).numpy().transpose(), delimiter=',')
-	np.savetxt(data_path / "nbsr_pi.csv", pi.data.numpy().transpose(), delimiter=',')
-	np.savetxt(data_path / "nbsr_dispersion.csv", phi.data.numpy().transpose(), delimiter=',')
-
-	model_state = {
-		'model_state_dict': nbsr_model.state_dict(),
-		'best_model_state_dict': nbsr_model.state_dict(),
-		'optimizer_state_dict': optimizer.state_dict(),
-		'loss': None,
-		'best_loss': None,
-		'converged': None
-	}
-	state_dict = {}
-	state_dict[model_state_key] = model_state
-	state_dict["x_map"] = x_map
-	torch.save(state_dict, config.output_path / checkpoint_filename)
-	config.dump_json(config.output_path / "config.json")
-
-	I = compute_negative_hessian_log_posterior(nbsr_model)
-	np.save(data_path / hessian_filename, I)
 
 @click.command()
 @click.argument('data_path', type=click.Path(exists=True))

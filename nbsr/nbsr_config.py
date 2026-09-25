@@ -20,6 +20,7 @@ class NBSRConfig():
     trended_dispersion:     bool = False
     dispersion_path:        Path | None = None
     dispersion_model_file:  str | None = None # we will look for output_path / dispersion_model_file
+    update_dispersion:      bool = False  # optimise a pre-fitted dispersion model jointly with beta.
     pivot:  bool = False
     use_cuda_if_available: bool = True
 
