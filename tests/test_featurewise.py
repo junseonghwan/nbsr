@@ -11,7 +11,7 @@ import torch
 from torch.func import grad, hessian, vmap
 
 from nbsr.dataset import Dataset
-from nbsr.dispersion import LogDispersionTrendPrior, MeanPowerCovariateDispersion
+from nbsr.featurewise_dispersion import LogDispersionTrendPrior, MeanPowerCovariateDispersion
 from nbsr.distributions import log_negbinomial
 from nbsr.featurewise_nb_model import FeaturewiseNegBinom
 from nbsr.fnb_stats import FeaturewiseNBStats

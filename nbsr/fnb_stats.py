@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 from nbsr.dataset import Dataset
 from nbsr.distributions import log_negbinomial, log_normal
-from nbsr.dispersion import LogDispersionTrendPrior, MeanPowerCovariateDispersion
+from nbsr.featurewise_dispersion import LogDispersionTrendPrior, MeanPowerCovariateDispersion
 from nbsr.featurewise_nb_model import FeaturewiseNegBinom
 
 
