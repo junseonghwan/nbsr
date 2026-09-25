@@ -25,16 +25,16 @@ from scipy.stats import false_discovery_control, norm
 REPO = Path(__file__).resolve().parents[1]
 MAIN = REPO / "nbsr" / "main.py"
 
-HMC = ["--trended_dispersion", "--pivot", "--z_columns", "lib_size", "--z_columns", "miRNA_capture", "--z_log"]
+NEW = ["--trended_dispersion", "--pivot", "--z_columns", "lib_size", "--z_columns", "miRNA_capture", "--z_log"]
 PREV = ["--trended_dispersion", "--pivot", "--dispersion_link", "log", "--no_feature_offsets",
         "--z_total_counts", "--b_pi_prior", "0", "0.1", "--sigma_b", "0.1"]
 CONFIGS = {
-    # NBSR-HMC dispersion model (log phi = b_0 + b_j + b_pi logit(pi) + b_w' [log lib_size, log capture]) and the
+    # New dispersion model, the form of the NBSR-HMC Stan code (log phi = b_0 + b_j + b_pi logit(pi) + b_w' [log lib_size, log capture]) and the
     # previous model (b0 + b1 log pi + b2 log total counts), each with the two-stage empirical beta prior
     # (DESeq2-style quantile matching) or the jointly learned prior. The empirical ones run first.
-    "hmc_emp": HMC + ["--beta_prior", "empirical"],
+    "new_emp": NEW + ["--beta_prior", "empirical"],
     "prev_emp": PREV + ["--beta_prior", "empirical"],
-    "hmc_learn": HMC,
+    "new_learn": NEW,
     "prev_learn": PREV,
 }
 
