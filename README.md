@@ -71,7 +71,8 @@ each run, and copies the best run to `/path/to/data`.
 | `--z_log` | off | log-transform the `--z_columns` first (e.g. library sizes, capture rates) |
 | `--dispersion_model_file FILE` | none | load a fitted dispersion model (`disp_model.pth` from `eb`) and hold it fixed |
 | `--estimate_dispersion_sd` | off | estimate a per-feature sd for the log-normal dispersion prior |
-| `--lam`, `--shape`, `--scale` | 1, 3, 2 | `beta ~ N(0, sd/lam)` with an inverse-gamma(shape, scale) prior on `sd^2`, one sd per covariate |
+| `--beta_prior_sd SD [SD ...]` | empirical | fix the prior sd of `beta`, one value or one per covariate (intercept first) |
+| `--stage1_prior_sd`, `--stage1_iterations`, `--prior_quantile` | 10, half of `-i`, 0.95 | settings of the empirical prior's stage-1 fit and quantile matching |
 | `--pivot` | off | reference-category parameterisation |
 
 A `dispersion.csv` in the data directory (one value per feature) switches to fixed dispersions and ignores the
@@ -79,17 +80,17 @@ dispersion options.
 
 ### Prior on the coefficients
 
-`beta ~ N(0, sd_d)` with one sd per covariate. Three ways to set it:
+`beta ~ N(0, sd_d)` with one fixed sd per covariate. By default the sd is set empirically, DESeq2-style:
+a stage-1 fit with a wide prior (`--stage1_prior_sd`, default 10, at half the iterations, written to
+`stage1/`), then for each covariate the sd of a zero-centred normal whose upper tail matches the
+precision-weighted `--prior_quantile` (default 0.95) of |beta| across features, then the main fit with those
+sds fixed, warm-started from stage 1. The matched sds are printed, written to `nbsr_beta_sd.csv`, and stored in
+`config.json`. `--beta_prior_sd` skips stage 1 and fixes the sd directly, as `sigma_beta2` given as data in
+the Stan model.
 
-- `--beta_prior learn` (default): sd learned jointly with beta under an inverse-gamma(`--shape`, `--scale`)
-  hyperprior, scaled by `--lam`. With sparse signal (most features unchanged) the joint mode collapses to
-  the spread of the null coefficients, which over-shrinks real effects.
-- `--beta_prior empirical`: DESeq2-style two-stage fit. A stage-1 fit with a wide prior (sd 10, half the
-  iterations, in `stage1/`), then the sd of each covariate is set so that the prior's upper tail matches the
-  precision-weighted `--prior_quantile` (default 0.95) of |beta| across features, and the main fit runs with
-  those sds fixed, warm-started from stage 1. The matched sds are printed and stored in `config.json`.
-- `--beta_prior_sd SD [SD ...]`: fixed sd, one value or one per covariate (intercept first), as `sigma_beta2`
-  given as data in the Stan model.
+The sd is deliberately not learned jointly with `beta`: the joint mode collapses to the spread of the null
+coefficients (about 0.1 on the total-imbalance simulations, where nearly every feature is unchanged), which
+over-shrinks the real effects and can be bimodal across runs.
 
 ### Small sample sizes: empirical Bayes
 

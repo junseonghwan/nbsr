@@ -188,14 +188,12 @@ def construct_model(config):
 	if W is not None:
 		print("W: ", W.shape)
 
-	lam = config.lam
-	shape = config.shape
-	scale = config.scale
 	pivot = config.pivot
+	beta_prior_sd = config.beta_prior_sd if config.beta_prior_sd is not None else config.stage1_prior_sd
 	disp_model = None
 	if dispersion is not None:
 		print("Run NBSR with pre-specified dispersion values.")
-		model = NegativeBinomialRegressionModel(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=dispersion, pivot=pivot, beta_prior_sd=config.beta_prior_sd)
+		model = NegativeBinomialRegressionModel(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=dispersion, pivot=pivot)
 	else:
 		if dispersion_model_path is not None:
 			print(f"Dispersion prior model is specified. Loading from {dispersion_model_path}")
@@ -204,10 +202,10 @@ def construct_model(config):
 			if disp_model is None:
 				print(f"Dispersion trend will be estimated.")
 				disp_model = build_dispersion_model(config, Y.shape[1], W)
-			model = NBSRTrended(X, Y, disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot, beta_prior_sd=config.beta_prior_sd)
+			model = NBSRTrended(X, Y, disp_model, beta_prior_sd=beta_prior_sd, pivot=pivot)
 		else:
 			print("Run NBSR with shared dispersion per feature.")
-			model = NegativeBinomialRegressionModel(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=None, pivot=pivot, beta_prior_sd=config.beta_prior_sd)
+			model = NegativeBinomialRegressionModel(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=None, pivot=pivot)
 
 	param_list = []
 	print("Parameters being optimized:")
@@ -229,10 +227,10 @@ def load_model_from_state_dict(config, state_dict):
         model.load_state_dict(state_dict[model_state_key]['model_state_dict'])
     elif config.init_from is not None:
         # Warm start: beta and the dispersion-model parameters of another fit (e.g. the stage-1 fit); the beta
-        # prior (psi) is left as constructed, since that is what differs between the stages.
+        # prior sd is left as constructed, since that is what differs between the stages.
         source = torch.load(Path(config.init_from), weights_only=False)[model_state_key]['model_state_dict']
         own = model.state_dict()
-        transfer = {k: v for k, v in source.items() if k != "psi" and k in own and own[k].shape == v.shape}
+        transfer = {k: v for k, v in source.items() if k != "beta_prior_sd" and k in own and own[k].shape == v.shape}
         model.load_state_dict(transfer, strict=False)
         print(f"Initialised {sorted(transfer)} from {config.init_from}")
     return model, params, x_map
@@ -258,14 +256,15 @@ def empirical_prior_sd(beta, hessian, covariate_count, quantile=0.95, max_abs=10
 def run(config):
 	"""Fit the model of `config`; with beta_prior == "empirical" run a wide-prior stage-1 fit first and set the
 	prior sd of each covariate from it before the main fit."""
-	if config.beta_prior == "empirical":
+	if config.beta_prior_sd is None:   # empirical: stage-1 fit with a wide prior sets the sd per covariate
 		stage1 = copy.deepcopy(config)
 		stage1.beta_prior = "fixed"
+		stage1.beta_prior_sd = [config.stage1_prior_sd]
 		stage1.output_path = Path(config.output_path) / "stage1"
 		stage1.iterations = config.stage1_iterations or max(config.iterations // 2, 1)
 		stage1.init_from = None
 		print(f"Stage 1: wide prior (sd {config.stage1_prior_sd}) for {stage1.iterations} iterations.")
-		_, model1 = _run_single(stage1, prior_sd_override=config.stage1_prior_sd)
+		_, model1 = _run_single(stage1)
 		beta1 = model1.beta.detach().cpu().numpy()
 		I1 = np.load(stage1.output_path / hessian_filename)
 		sds = empirical_prior_sd(beta1, I1, model1.covariate_count, config.prior_quantile)
@@ -277,9 +276,7 @@ def run(config):
 		return _run_single(main)
 	return _run_single(config)
 
-def _run_single(config, prior_sd_override=None):
-	if prior_sd_override is not None:
-		config.beta_prior_sd = [prior_sd_override]   # broadcast to every covariate by the model
+def _run_single(config):
 	state_dict = {}
 	output_path = Path(config.output_path)
 	create_directory(output_path)
@@ -332,7 +329,7 @@ def _run_single(config, prior_sd_override=None):
 		phi = model.softplus(model.phi)
 
 	np.savetxt(output_path / "nbsr_beta.csv", model.beta.data.numpy().transpose(), delimiter=',')
-	np.savetxt(output_path / "nbsr_beta_sd.csv", model.softplus(model.psi.data).numpy().transpose(), delimiter=',')
+	np.savetxt(output_path / "nbsr_beta_sd.csv", model.beta_prior_sd.cpu().numpy(), delimiter=',')
 	np.savetxt(output_path / "nbsr_pi.csv", pi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(output_path / "nbsr_dispersion.csv", phi.data.numpy().transpose(), delimiter=',')
 
@@ -450,9 +447,6 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 @click.option('-l', '--lr', default=0.05, type=float, help="NBSR model parameters learning rate.")
 @click.option('--eb_iter', default=3000, type=int, help="NBSR dispersion model training iterations.")
 @click.option('--eb_lr', default=0.05, type=float, help="NBSR dispersion model parameters learning rate.")
-@click.option('--lam', default=1., type=float)
-@click.option('--shape', default=3, type=float)
-@click.option('--scale', default=2, type=float)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--update_dispersion', is_flag=True, show_default=False, default=False, type=bool)
 @click.option('--z_columns', multiple=True, help="Columns of X.csv used as external covariates of the dispersion model.")
@@ -463,12 +457,12 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 @click.option('--dispersion_link', type=click.Choice(["logit", "log"]), default="logit", show_default=True, help="Transform of pi in the dispersion model: logit (NBSR-HMC) or log (previous NBSR model).")
 @click.option('--no_feature_offsets', is_flag=True, default=False, help="Drop the per-feature offsets b_j from the dispersion model.")
 @click.option('--z_total_counts', is_flag=True, default=False, help="Add log total counts per sample as an external dispersion covariate (the log R_i term of the previous model).")
-@click.option('--beta_prior_sd', multiple=True, type=float, help="Fix the prior sd of beta (one value, or one per covariate incl. the intercept) instead of learning it by empirical Bayes.")
-@click.option('--beta_prior', type=click.Choice(["learn", "empirical"]), default="learn", show_default=True, help="Prior sd of beta: learned jointly (psi), or set per covariate from a wide-prior stage-1 fit by matching the upper quantile of |beta| (DESeq2-style). Ignored when --beta_prior_sd is given.")
-@click.option('--stage1_iterations', type=int, default=None, help="Iterations of the stage-1 fit for --beta_prior empirical (default: half of -i).")
-@click.option('--prior_quantile', type=float, default=0.95, show_default=True, help="Quantile of |beta| matched to the prior tail for --beta_prior empirical.")
+@click.option('--beta_prior_sd', multiple=True, type=float, help="Fix the prior sd of beta (one value, or one per covariate incl. the intercept). Default: empirical, set per covariate from a wide-prior stage-1 fit by matching the upper quantile of |beta| (DESeq2-style).")
+@click.option('--stage1_prior_sd', type=float, default=10.0, show_default=True, help="Prior sd of every covariate in the wide-prior stage-1 fit (empirical prior).")
+@click.option('--stage1_iterations', type=int, default=None, help="Iterations of the stage-1 fit (default: half of -i).")
+@click.option('--prior_quantile', type=float, default=0.95, show_default=True, help="Quantile of |beta| matched to the prior tail (empirical prior).")
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, scale, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, beta_prior_sd, beta_prior, stage1_iterations, prior_quantile, pivot):
+def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, beta_prior_sd, stage1_prior_sd, stage1_iterations, prior_quantile, pivot):
 	"""Empirical-Bayes workflow: fit the dispersion model to DESeq2's fitted means, then run NBSR with
 	that dispersion model (fixed unless --update_dispersion)."""
 	data_path = Path(data_path)
@@ -484,16 +478,13 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 							dispersion_link=dispersion_link, feature_offsets=not no_feature_offsets, z_total_counts=z_total_counts,
 						lr=lr,
 						iterations=iterations,
-						lam=lam,
-						shape=shape,
-						scale=scale,
 						estimate_dispersion_sd=estimate_dispersion_sd,
 						trended_dispersion=True,
 						dispersion_model_file="disp_model.pth",
 						update_dispersion=update_dispersion,
 						beta_prior_sd=list(beta_prior_sd) or None,
-						beta_prior="fixed" if beta_prior_sd else beta_prior,
-						stage1_iterations=stage1_iterations, prior_quantile=prior_quantile,
+						beta_prior="fixed" if beta_prior_sd else "empirical",
+						stage1_prior_sd=stage1_prior_sd, stage1_iterations=stage1_iterations, prior_quantile=prior_quantile,
 						pivot=pivot)
 
 	print("Performing Empirical Bayes estimation of dispersion.")
@@ -505,7 +496,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, lam, shape, sca
 	X, _ = construct_tensor_from_coldata(coldata_pd, column_names, counts_pd.shape[1])
 	W = build_dispersion_covariates(coldata_pd, z_columns, counts_pd.shape[1], z_log, Y, z_total_counts)
 	disp_model = build_dispersion_model(config, Y.shape[1], W)
-	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model, lam=lam, shape=shape, scale=scale, pivot=pivot)
+	nbsr_model = NBSRTrended(X, Y, disp_model=disp_model, beta_prior_sd=stage1_prior_sd, pivot=pivot)
 	fit_dispersion_model(nbsr_model, pi_hat, eb_iter, eb_lr)
 
 	phi = torch.exp(disp_model.log_dispersion(pi_hat))
@@ -548,18 +539,15 @@ def fit_dispersion_model(nbsr_model, pi_hat, iterations, lr):
 @click.option('--dispersion_link', type=click.Choice(["logit", "log"]), default="logit", show_default=True, help="Transform of pi in the dispersion model: logit (NBSR-HMC) or log (previous NBSR model).")
 @click.option('--no_feature_offsets', is_flag=True, default=False, help="Drop the per-feature offsets b_j from the dispersion model.")
 @click.option('--z_total_counts', is_flag=True, default=False, help="Add log total counts per sample as an external dispersion covariate (the log R_i term of the previous model).")
-@click.option('--lam', default=1., type=float)
-@click.option('--shape', default=3, type=float)
-@click.option('--scale', default=2, type=float)
 @click.option('--dispersion_model_file', default=None, type=str)
 @click.option('--trended_dispersion', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--estimate_dispersion_sd', is_flag=True, show_default=False, default=False, type=bool)
-@click.option('--beta_prior_sd', multiple=True, type=float, help="Fix the prior sd of beta (one value, or one per covariate incl. the intercept) instead of learning it by empirical Bayes.")
-@click.option('--beta_prior', type=click.Choice(["learn", "empirical"]), default="learn", show_default=True, help="Prior sd of beta: learned jointly (psi), or set per covariate from a wide-prior stage-1 fit by matching the upper quantile of |beta| (DESeq2-style). Ignored when --beta_prior_sd is given.")
-@click.option('--stage1_iterations', type=int, default=None, help="Iterations of the stage-1 fit for --beta_prior empirical (default: half of -i).")
-@click.option('--prior_quantile', type=float, default=0.95, show_default=True, help="Quantile of |beta| matched to the prior tail for --beta_prior empirical.")
+@click.option('--beta_prior_sd', multiple=True, type=float, help="Fix the prior sd of beta (one value, or one per covariate incl. the intercept). Default: empirical, set per covariate from a wide-prior stage-1 fit by matching the upper quantile of |beta| (DESeq2-style).")
+@click.option('--stage1_prior_sd', type=float, default=10.0, show_default=True, help="Prior sd of every covariate in the wide-prior stage-1 fit (empirical prior).")
+@click.option('--stage1_iterations', type=int, default=None, help="Iterations of the stage-1 fit (default: half of -i).")
+@click.option('--prior_quantile', type=float, default=0.95, show_default=True, help="Quantile of |beta| matched to the prior tail (empirical prior).")
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, lam, shape, scale, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, beta_prior_sd, beta_prior, stage1_iterations, prior_quantile, pivot):
+def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, beta_prior_sd, stage1_prior_sd, stage1_iterations, prior_quantile, pivot):
 
 	data_path = Path(data_path)
 	losses = []
@@ -576,15 +564,12 @@ def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, s
 							dispersion_link=dispersion_link, feature_offsets=not no_feature_offsets, z_total_counts=z_total_counts,
 							lr=lr,
 							iterations=iterations,
-							lam=lam,
-							shape=shape,
-							scale=scale,
 							estimate_dispersion_sd=estimate_dispersion_sd,
 							trended_dispersion=trended_dispersion,
 							dispersion_model_file=dispersion_model_file,
 							beta_prior_sd=list(beta_prior_sd) or None,
-							beta_prior="fixed" if beta_prior_sd else beta_prior,
-							stage1_iterations=stage1_iterations, prior_quantile=prior_quantile,
+							beta_prior="fixed" if beta_prior_sd else "empirical",
+							stage1_prior_sd=stage1_prior_sd, stage1_iterations=stage1_iterations, prior_quantile=prior_quantile,
 							pivot=pivot)
 		loss_history, _ = run(config)
 		losses.append(np.min(loss_history)) # store the best (minimal) loss.

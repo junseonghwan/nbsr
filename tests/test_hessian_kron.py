@@ -26,8 +26,7 @@ def _data(d=3, N=12, J=6, seed=0):
 
 def _base_model(pivot, phi_fixed=True):
     X, Y, phi, _ = _data()
-    return nbm.NegativeBinomialRegressionModel(X, Y, lam=2.0, shape=3.0, scale=2.0,
-                                               dispersion=phi if phi_fixed else None, pivot=pivot)
+    return nbm.NegativeBinomialRegressionModel(X, Y, beta_prior_sd=1.0, dispersion=phi if phi_fixed else None, pivot=pivot)
 
 
 def _trended_model(pivot, with_W=True, link="logit", feature_offsets=True):
@@ -41,7 +40,7 @@ def _trended_model(pivot, with_W=True, link="logit", feature_offsets=True):
         disp.kappa_bj.fill_(0.2)
         if with_W:
             disp.b_w.copy_(torch.tensor([0.3, -0.2], dtype=torch.float64))
-    return nbsrd.NBSRTrended(X, Y, disp_model=disp, lam=2.0, shape=3.0, scale=2.0, pivot=pivot)
+    return nbsrd.NBSRTrended(X, Y, disp_model=disp, beta_prior_sd=1.0, pivot=pivot)
 
 
 MODELS = {"base": lambda pivot: _base_model(pivot),
@@ -85,7 +84,7 @@ def test_likelihood_gradient_matches_autograd(name, pivot):
 def test_posterior_hessian_matches_autograd(name, pivot):
     model = MODELS[name](pivot)
     with torch.no_grad():  # distinct prior sd per covariate so the layout matters
-        model.psi.copy_(torch.linspace(-1.0, 2.0, model.covariate_count, dtype=torch.float64))
+        model.beta_prior_sd.copy_(torch.linspace(0.5, 2.0, model.covariate_count, dtype=torch.float64))
     beta = model.beta.detach().clone()
     expected = torch.autograd.functional.hessian(model.log_posterior, beta)
     actual = model.log_posterior_hessian(beta)

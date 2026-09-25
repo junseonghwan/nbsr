@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 import nbsr.negbinomial_model as nbm
-from nbsr.distributions import log_normal, softplus_inv
+from nbsr.distributions import log_normal
 
 
 def test_each_covariate_uses_its_own_sd():
@@ -10,7 +10,7 @@ def test_each_covariate_uses_its_own_sd():
     P, J, N = 2, 3, 4
     X = torch.ones(N, P, dtype=torch.float64)
     Y = torch.ones(N, J, dtype=torch.float64)
-    model = nbm.NegativeBinomialRegressionModel(X, Y, lam=1., shape=3., scale=2., dispersion=np.ones(J))
+    model = nbm.NegativeBinomialRegressionModel(X, Y, beta_prior_sd=[1., 100.], dispersion=np.ones(J))
 
     # The likelihood computes X @ beta.reshape(P, J): row 0 = intercept, row 1 = trt.
     beta_matrix = torch.tensor([[1., 2., 3.],      # intercept coefficients for features 0, 1, 2
@@ -20,8 +20,6 @@ def test_each_covariate_uses_its_own_sd():
 
     # Different prior sd per covariate: intercept sd = 1, trt sd = 100.
     sd = torch.tensor([1., 100.], dtype=torch.float64)
-    with torch.no_grad():
-        model.psi.copy_(softplus_inv(sd))
 
     # Intended prior: every intercept coefficient uses sd 1, every trt coefficient uses sd 100.
     expected = log_normal(beta_matrix, torch.zeros_like(beta_matrix), sd[:, None]).sum()

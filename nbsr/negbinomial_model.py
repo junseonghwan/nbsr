@@ -9,23 +9,27 @@ so the Hessian has the Kronecker structure handled by utils.kron_hessian.
 """
 import torch
 
-from nbsr.distributions import log_negbinomial, log_normal, log_invgamma, softplus_inv, nb_log_density_derivatives
+from nbsr.distributions import log_negbinomial, log_normal, softplus_inv, nb_log_density_derivatives
 from nbsr.utils import kron_hessian
 
 
 class NegativeBinomialRegressionModel(torch.nn.Module):
     # when dispersion prior is unspecified, default to no prior.
-    def __init__(self, X, Y, lam, shape, scale, dispersion_prior=None, dispersion=None, pivot=False, beta_prior_sd=None):
-        """beta_prior_sd: fix the prior sd of beta per covariate (scalar or length-P) instead of learning it by
-        empirical Bayes through psi. Mirrors sigma_beta2 given as data in the NBSR-HMC Stan model."""
+    def __init__(self, X, Y, beta_prior_sd=10.0, dispersion_prior=None, dispersion=None, pivot=False):
+        """
+        X : (N, P) design with intercept; Y : (N, J) counts.
+        beta_prior_sd : prior sd of beta, a scalar or one value per covariate (intercept first). Fixed, not
+            learned: the run() driver sets it from a wide-prior stage-1 fit (DESeq2-style quantile matching)
+            unless the user supplies it, mirroring sigma_beta2 given as data in the NBSR-HMC Stan model.
+        dispersion_prior : a DispersionModel acting as a log-normal prior on free per-feature dispersions.
+        dispersion : fixed per-feature dispersions (array of length J); None = free parameters.
+        pivot : fix the last feature's coefficients at zero (reference category).
+        """
         super().__init__()
         assert isinstance(X, torch.Tensor) and isinstance(Y, torch.Tensor)
         # Place X, Y on buffer so that they can be moved to GPU.
         self.register_buffer("X", X.to(torch.float64))
         self.register_buffer("Y", Y.to(torch.float64))
-        self.register_buffer("lam", torch.tensor(lam, dtype=torch.float64))
-        self.register_buffer("beta_var_shape", torch.tensor(shape, dtype=torch.float64))
-        self.register_buffer("beta_var_scale", torch.tensor(scale, dtype=torch.float64))
         self.register_buffer("s", self.Y.sum(dim=1))  # library sizes
 
         self.pivot = pivot
@@ -38,6 +42,12 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         print("Sample count:", self.sample_count)
         print("Covariate count:", self.covariate_count)
 
+        sd = torch.as_tensor(beta_prior_sd, dtype=torch.float64).reshape(-1)
+        if sd.numel() == 1:
+            sd = sd.expand(self.covariate_count)
+        assert sd.numel() == self.covariate_count, "beta_prior_sd must be a scalar or one value per covariate"
+        self.register_buffer("beta_prior_sd", sd.clone())
+
         # The parameters we adjust during training.
         self.dim = self.rna_count - 1 if pivot else self.rna_count
         self.beta = torch.nn.Parameter(torch.randn(self.covariate_count * self.dim, dtype=torch.float64), requires_grad=True)
@@ -46,16 +56,6 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
             self.phi = torch.nn.Parameter(torch.randn(self.rna_count, dtype=torch.float64), requires_grad=True)
         else:
             self.phi = softplus_inv(torch.as_tensor(dispersion, dtype=torch.float64) + 1e-9)
-        if beta_prior_sd is None:
-            self.psi = torch.nn.Parameter(softplus_inv(torch.ones(self.covariate_count, dtype=torch.float64)), requires_grad=True)
-            self.learn_beta_prior_sd = True
-        else:
-            sd = torch.as_tensor(beta_prior_sd, dtype=torch.float64).reshape(-1)
-            if sd.numel() == 1:
-                sd = sd.expand(self.covariate_count)
-            assert sd.numel() == self.covariate_count, "beta_prior_sd must be a scalar or one value per covariate"
-            self.register_buffer("psi", softplus_inv(sd.clone()))
-            self.learn_beta_prior_sd = False
 
     def to_device(self, device):
         self.to(device)
@@ -86,23 +86,20 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
         # Flat beta is covariate-major (see predict: X @ beta.reshape(covariate_count, dim)).
         # Transpose so that column d holds covariate d and broadcasts against sd[d].
         beta_ = beta.reshape(self.covariate_count, self.dim).T
-        sd = self.softplus(self.psi)
-        return torch.sum(log_normal(beta_, torch.zeros_like(sd), sd / self.lam))
+        sd = self.beta_prior_sd
+        return torch.sum(log_normal(beta_, torch.zeros_like(sd), sd))
 
     def log_posterior(self, beta):
         pi, _ = self.predict(beta, self.X)
         log_lik = self.log_likelihood(beta)
-        sd = self.softplus(self.psi)
-        # normal prior on beta -- 0 mean and sd = softplus(psi) / lam; inverse-gamma prior on sd^2.
         log_beta_prior = self.log_beta_prior(beta)
-        log_var_prior = torch.sum(log_invgamma(sd ** 2, self.beta_var_shape, self.beta_var_scale)) if self.learn_beta_prior_sd else 0.0
         log_dispersion_prior = 0
         if self.disp_model is not None:
             # The dispersion model acts as a log-normal prior on the free per-feature dispersions, evaluated
             # at the sample-average composition.
             pi_bar = pi.mean(0, keepdim=True)
             log_dispersion_prior = torch.sum(self.disp_model.log_density(self.softplus(self.phi), pi_bar))
-        return log_lik + log_beta_prior + log_var_prior + log_dispersion_prior
+        return log_lik + log_beta_prior + log_dispersion_prior
 
     def forward(self, beta):
         return self.log_posterior(beta)
@@ -142,8 +139,7 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
 
     def log_beta_prior_gradient(self, beta):
         beta_ = beta.reshape(self.covariate_count, self.dim).T
-        sd = self.softplus(self.psi)
-        log_prior_grad = -(self.lam ** 2) * beta_ / sd ** 2
+        log_prior_grad = -beta_ / self.beta_prior_sd ** 2
         # beta_ is (dim, covariate_count); transpose back so the flat gradient is covariate-major like beta.
         return log_prior_grad.T.flatten()
 
@@ -162,6 +158,6 @@ class NegativeBinomialRegressionModel(torch.nn.Module):
     def log_posterior_hessian(self, beta):
         H_lik = self.log_likelihood_hessian(beta)
         # Flat beta is covariate-major (index d*dim + k), so covariate d's sd repeats dim times consecutively.
-        sd = self.softplus(self.psi.detach()).repeat_interleave(self.dim).to(H_lik.dtype)
-        # log N(beta; 0, sd/lam) has Hessian -lam^2/sd^2 on the diagonal.
-        return H_lik - torch.diag(self.lam ** 2 / sd ** 2)
+        sd = self.beta_prior_sd.repeat_interleave(self.dim).to(H_lik.dtype)
+        # log N(beta; 0, sd) has Hessian -1/sd^2 on the diagonal.
+        return H_lik - torch.diag(1.0 / sd ** 2)

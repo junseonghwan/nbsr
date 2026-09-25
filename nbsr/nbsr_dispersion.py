@@ -7,14 +7,14 @@ c_ij = d log dispersion_ij / d log pi_ij = -b_pi / (1 - pi_ij) and c2_ij = -b_pi
 """
 import torch
 
-from nbsr.distributions import log_negbinomial, log_invgamma
+from nbsr.distributions import log_negbinomial
 from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 
 
 class NBSRTrended(NegativeBinomialRegressionModel):
 
-    def __init__(self, X, Y, disp_model, lam, shape, scale, pivot=False, beta_prior_sd=None):
-        super().__init__(X, Y, lam=lam, shape=shape, scale=scale, dispersion_prior=disp_model, dispersion=None, pivot=pivot, beta_prior_sd=beta_prior_sd)
+    def __init__(self, X, Y, disp_model, beta_prior_sd=10.0, pivot=False):
+        super().__init__(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=None, pivot=pivot)
         assert disp_model.feature_count == self.rna_count, "dispersion model built for a different number of features"
         self.phi = None
 
@@ -31,11 +31,7 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         return self.log_likelihood(pi, self.dispersion(pi))
 
     def log_posterior(self, beta):
-        log_lik = self.log_likelihood_beta(beta)
-        sd = self.softplus(self.psi)
-        log_beta_prior = self.log_beta_prior(beta)
-        log_var_prior = torch.sum(log_invgamma(sd ** 2, self.beta_var_shape, self.beta_var_scale)) if self.learn_beta_prior_sd else 0.0
-        return log_lik + log_beta_prior + log_var_prior + self.disp_model.log_prior()
+        return self.log_likelihood_beta(beta) + self.log_beta_prior(beta) + self.disp_model.log_prior()
 
     def forward(self, beta):
         return self.log_posterior(beta)

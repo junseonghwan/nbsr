@@ -21,9 +21,6 @@ class NBSRConfig():
     feature_offsets: bool = True         # per-feature offsets b_j in the dispersion model
     z_total_counts: bool = False         # add log(sum_j Y_ij) as an external dispersion covariate
     lr:    float = 0.05
-    lam:   float = 1.0
-    shape: float = 3.0
-    scale: float = 2.0
     iterations: int = 10000
     estimate_dispersion_sd: bool = False
     trended_dispersion:     bool = False
@@ -31,10 +28,10 @@ class NBSRConfig():
     dispersion_model_file:  str | None = None # we will look for output_path / dispersion_model_file
     update_dispersion:      bool = False  # optimise a pre-fitted dispersion model jointly with beta.
     pivot:  bool = False
-    beta_prior_sd: list[float] | None = None  # fixed prior sd per covariate; None = learn by empirical Bayes (psi)
-    beta_prior: str = "learn"            # "learn" (psi by joint MAP), "fixed" (beta_prior_sd given), or "empirical":
+    beta_prior_sd: list[float] | None = None  # prior sd of beta per covariate (intercept first). None = "empirical":
                                          #   a stage-1 fit with a wide prior, then per-covariate sd matched to the
-                                         #   upper quantile of |beta| (DESeq2-style), then the main fit.
+                                         #   upper quantile of |beta| (DESeq2-style), then the main fit with it fixed.
+    beta_prior: str = "empirical"        # "empirical" or "fixed" (beta_prior_sd given); set by the CLI, informational
     stage1_iterations: int | None = None # iterations of the stage-1 fit (default: half of iterations)
     stage1_prior_sd: float = 10.0        # prior sd of every covariate in the stage-1 fit
     prior_quantile: float = 0.95         # |beta| quantile matched to the prior's tail
