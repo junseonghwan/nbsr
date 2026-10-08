@@ -47,6 +47,22 @@ Both models take `--pivot`, which fixes the last feature's coefficients at zero 
 Stan model). Without it every feature has coefficients and the normal prior on `beta` resolves the softmax
 invariance.
 
+### Latent factors
+
+`--latent_dim K` adds K latent factors to the linear predictor of either model (the NBSR-latent Stan model):
+
+    eta_ij = x_i' beta_j + z_i' gamma_j,   z_i ~ N(0, I_K),   gamma_j ~ N(0, sd)   (sd from --latent_prior_sd, default 1)
+
+The scores `Z` (samples x K) and loadings `Gamma` (K x features) are fitted jointly with `beta` and the
+dispersion parameters by the same optimiser, and written to `nbsr_latent_scores.csv` and
+`nbsr_latent_loadings.csv`. The Hessian (and `hessian.npy`) is over `(beta, Gamma)` with `Z` held at its fitted
+values, in the layout of an augmented design `[X, Z]`: the `beta` block comes first, so the standard errors
+of `logRR` condition on the fitted scores. `results` evaluates the contrast at `Z = 0`, a sample at the prior
+mean of the factors, so that the result is common to all samples when the contrasted variable is the only
+covariate; `--latent_fitted` uses each sample's fitted scores instead. The latent term is invariant to
+rotations of `(Z, Gamma)`, so the fitted `Z` and `Gamma` are identified only up to rotation (the fit, `pi` and
+`logRR` are not affected); the trade-off between `Z` and covariates correlated with it is resolved by the priors.
+
 Gradients and Hessians of the log posterior are in closed form (`utils.kron_hessian`), so the Hessian of a
 model with a few hundred features takes well under a second; it is a dense `(P * J)^2` matrix, so the
 approach targets panels of hundreds to a few thousand features.

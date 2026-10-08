@@ -13,8 +13,9 @@ from nbsr.negbinomial_model import NegativeBinomialRegressionModel
 
 class NBSRTrended(NegativeBinomialRegressionModel):
 
-    def __init__(self, X, Y, disp_model, beta_prior_sd=10.0, pivot=False):
-        super().__init__(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=None, pivot=pivot)
+    def __init__(self, X, Y, disp_model, beta_prior_sd=10.0, pivot=False, latent_dim=0, latent_prior_sd=1.0):
+        super().__init__(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=None, pivot=pivot,
+                         latent_dim=latent_dim, latent_prior_sd=latent_prior_sd)
         assert disp_model.feature_count == self.rna_count, "dispersion model built for a different number of features"
         self.phi = None
 
@@ -31,7 +32,8 @@ class NBSRTrended(NegativeBinomialRegressionModel):
         return self.log_likelihood(pi, self.dispersion(pi))
 
     def log_posterior(self, beta):
-        return self.log_likelihood_beta(beta) + self.log_beta_prior(beta) + self.disp_model.log_prior()
+        return (self.log_likelihood_beta(beta) + self.log_beta_prior(beta) + self.disp_model.log_prior()
+                + self.log_latent_prior())
 
     def forward(self, beta):
         return self.log_posterior(beta)

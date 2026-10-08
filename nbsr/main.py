@@ -60,13 +60,18 @@ def cholesky_with_jitter(I, max_jitter=1e-3):
 							   "the fit has probably not converged.")
 		eps = 1e-8 if eps == 0.0 else eps * 10.0
 
-def inference_logRR(model, var, w1, w0, x_map, I, return_cov=True):
+def inference_logRR(model, var, w1, w0, x_map, I, return_cov=True, latent_at_zero=True):
 	"""Log relative-abundance ratio of level w1 over w0 of `var` for every sample and feature, with
-	delta-method standard errors from the negative Hessian I (covariate-major, index d*dim + k).
+	delta-method standard errors from the negative Hessian I (covariate-major over (beta, Gamma), index
+	d*dim + k).
 
-	Each logRR_nj is a function g_nj(beta); its gradient a_nj (length dim*P) gives Var(logRR_nj) = a_nj' I^-1 a_nj.
-	With I = L L' this is ||L^-1 a_nj||^2, so all N*J variances come from one triangular solve. return_cov
-	also forms the (N, J, J) covariance of the logRR vector within each sample.
+	Each logRR_nj is a function g_nj(beta, Gamma); its gradient a_nj (length dim*(P+K)) gives
+	Var(logRR_nj) = a_nj' I^-1 a_nj. With I = L L' this is ||L^-1 a_nj||^2, so all N*J variances come from one
+	triangular solve. return_cov also forms the (N, J, J) covariance of the logRR vector within each sample.
+
+	With latent factors the contrast is evaluated at latent scores Z = 0 (a sample at the factor prior mean,
+	so the logRR is common to all samples when `var` is the only covariate) unless latent_at_zero=False, which
+	uses each sample's fitted scores.
 	"""
 	assert I is not None
 	var_level0 = "{varname}_{levelname}".format(varname=var, levelname=w0)
@@ -91,20 +96,25 @@ def inference_logRR(model, var, w1, w0, x_map, I, return_cov=True):
 	assert found, f"{var} not found among the covariates"
 	print(f"Found covariate {var} in the model.")
 
-	pi0, _ = model.predict(model.beta, Z0)
-	pi1, _ = model.predict(model.beta, Z1)
+	latent = model.latent_scores(zero=latent_at_zero)
+	pi0, _ = model.predict(model.beta, Z0, latent)
+	pi1, _ = model.predict(model.beta, Z1, latent)
 	logRRi = torch.log(pi1) - torch.log(pi0)
 	log2RRi = torch.log2(pi1) - torch.log2(pi0)
 
 	N, J = pi0.shape
-	P = model.covariate_count
 	d = model.dim  # J-1 if model.pivot; J otherwise.
+	# Augmented designs [Z, latent]: the latent columns are shared, so the Gamma part of the gradient is
+	# latent_k (pi0_k - pi1_k) and vanishes at latent = 0.
+	A0 = model.augmented_design(Z0, latent).detach()
+	A1 = model.augmented_design(Z1, latent).detach()
+	P = A0.shape[1]  # covariates plus latent factors
 
-	# Gradient of logRR_nj w.r.t. beta_{k,d}: z_{1,d} (1[j=k] - pi1_k) - z_{0,d} (1[j=k] - pi0_k), k < dim.
+	# Gradient of logRR_nj w.r.t. theta_{k,d}: a_{1,d} (1[j=k] - pi1_k) - a_{0,d} (1[j=k] - pi0_k), k < dim.
 	identity = torch.eye(J, d, device=pi0.device, dtype=pi0.dtype).unsqueeze(0).expand(N, J, d)
 	ipi0 = identity - pi0[:, :d].unsqueeze(1)                                   # (N, J, d)
 	ipi1 = identity - pi1[:, :d].unsqueeze(1)
-	ret = ipi1.unsqueeze(3) * Z1.unsqueeze(1).unsqueeze(2) - ipi0.unsqueeze(3) * Z0.unsqueeze(1).unsqueeze(2)
+	ret = ipi1.unsqueeze(3) * A1.unsqueeze(1).unsqueeze(2) - ipi0.unsqueeze(3) * A0.unsqueeze(1).unsqueeze(2)
 	ret = ret.transpose(2, 3).reshape(N, J, d * P)                                # covariate-major, matches I
 
 	I = I.to(device=ret.device, dtype=ret.dtype)
@@ -190,11 +200,12 @@ def construct_model(config):
 		print("W: ", W.shape)
 
 	pivot = config.pivot
+	latent = dict(latent_dim=config.latent_dim, latent_prior_sd=config.latent_prior_sd)
 	beta_prior_sd = config.beta_prior_sd if config.beta_prior_sd is not None else config.stage1_prior_sd
 	disp_model = None
 	if dispersion is not None:
 		print("Run NBSR with pre-specified dispersion values.")
-		model = NegativeBinomialRegressionModel(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=dispersion, pivot=pivot)
+		model = NegativeBinomialRegressionModel(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=dispersion, pivot=pivot, **latent)
 	else:
 		if dispersion_model_path is not None:
 			print(f"Dispersion prior model is specified. Loading from {dispersion_model_path}")
@@ -205,10 +216,10 @@ def construct_model(config):
 			if disp_model is None:
 				print(f"Dispersion trend will be estimated.")
 				disp_model = build_dispersion_model(config, Y.shape[1], W)
-			model = NBSRTrended(X, Y, disp_model, beta_prior_sd=beta_prior_sd, pivot=pivot)
+			model = NBSRTrended(X, Y, disp_model, beta_prior_sd=beta_prior_sd, pivot=pivot, **latent)
 		else:
 			print("Run NBSR with shared dispersion per feature.")
-			model = NegativeBinomialRegressionModel(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=None, pivot=pivot)
+			model = NegativeBinomialRegressionModel(X, Y, beta_prior_sd=beta_prior_sd, dispersion_prior=disp_model, dispersion=None, pivot=pivot, **latent)
 
 	param_list = []
 	print("Parameters being optimized:")
@@ -249,10 +260,11 @@ def _load_state(model, sd):
 def empirical_prior_sd(beta, hessian, covariate_count, quantile=0.95, max_abs=10.0):
 	"""DESeq2-style prior width per covariate from a (near-)MLE fit: the sd of a zero-centred normal whose
 	upper tail matches the precision-weighted `quantile` of |beta| over the features, after dropping
-	|beta| > max_abs as non-converged. beta is the flat covariate-major vector, hessian the negative Hessian."""
+	|beta| > max_abs as non-converged. beta is the flat covariate-major vector, hessian the negative Hessian
+	over (beta, Gamma) whose leading block belongs to beta."""
 	dim = beta.size // covariate_count
 	b = beta.reshape(covariate_count, dim)
-	se = np.sqrt(np.diag(np.linalg.inv(hessian))).reshape(covariate_count, dim)
+	se = np.sqrt(np.diag(np.linalg.inv(hessian)))[:beta.size].reshape(covariate_count, dim)
 	z = ss.norm.ppf(0.5 + quantile / 2)
 	sds = []
 	for d in range(covariate_count):
@@ -347,6 +359,9 @@ def _run_single(config):
 	np.savetxt(output_path / "nbsr_beta_sd.csv", model.beta_prior_sd.cpu().numpy(), delimiter=',')
 	np.savetxt(output_path / "nbsr_pi.csv", pi.data.numpy().transpose(), delimiter=',')
 	np.savetxt(output_path / "nbsr_dispersion.csv", phi.data.numpy().transpose(), delimiter=',')
+	if model.latent_dim > 0:
+		np.savetxt(output_path / "nbsr_latent_scores.csv", model.Z.data.numpy(), delimiter=',')       # samples x K
+		np.savetxt(output_path / "nbsr_latent_loadings.csv", model.loadings().data.numpy(), delimiter=',')  # features x K
 
 	torch.save(state_dict, output_path / checkpoint_filename)
 	config.dump_json(output_path / "config.json")
@@ -375,7 +390,7 @@ def _safe_name(x):
     """Convert arbitrary string to filesystem-safe name."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))
 
-def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False, save_cov=True):
+def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hessian=False, save_cov=True, latent_at_zero=True):
 	results_path = Path(results_path)
 	
 	comparison_name = f"{_safe_name(var)}__{_safe_name(w1)}_vs_{_safe_name(w0)}"
@@ -402,7 +417,7 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 		I = compute_negative_hessian_log_posterior(model, config.use_cuda_if_available).detach().cpu()
 		np.save(results_path / hessian_filename, I)
 
-	logRR, log2RR, logRR_std, cov_mat = inference_logRR(model, var, w1, w0, x_map, I, return_cov=save_cov)
+	logRR, log2RR, logRR_std, cov_mat = inference_logRR(model, var, w1, w0, x_map, I, return_cov=save_cov, latent_at_zero=latent_at_zero)
 	#logRR_std = torch.sqrt(torch.diagonal(cov_mat, dim1 = 1, dim2 = 2)).data.numpy()
 
 	# Compute the test statistic and the p-values.
@@ -477,7 +492,9 @@ def generate_results(results_path, var, w1, w0, absolute_fc=True, recompute_hess
 @click.option('--stage1_iterations', type=int, default=None, help="Iterations of the stage-1 fit (default: half of -i).")
 @click.option('--prior_quantile', type=float, default=0.95, show_default=True, help="Quantile of |beta| matched to the prior tail (empirical prior).")
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, beta_prior_sd, stage1_prior_sd, stage1_iterations, prior_quantile, pivot):
+@click.option('--latent_dim', type=int, default=0, show_default=True, help="Number of latent factors K: eta_ij = x_i' beta_j + z_i' gamma_j with z_i ~ N(0, I) and gamma_j ~ N(0, latent_prior_sd).")
+@click.option('--latent_prior_sd', type=float, default=1.0, show_default=True, help="Prior sd of the latent loadings gamma_j.")
+def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, estimate_dispersion_sd, update_dispersion, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, beta_prior_sd, stage1_prior_sd, stage1_iterations, prior_quantile, pivot, latent_dim, latent_prior_sd):
 	"""Empirical-Bayes workflow: fit the dispersion model to DESeq2's fitted means, then run NBSR with
 	that dispersion model (fixed unless --update_dispersion)."""
 	data_path = Path(data_path)
@@ -500,7 +517,7 @@ def eb(data_path, vars, mu_file, iterations, lr, eb_iter, eb_lr, estimate_disper
 						beta_prior_sd=list(beta_prior_sd) or None,
 						beta_prior="fixed" if beta_prior_sd else "empirical",
 						stage1_prior_sd=stage1_prior_sd, stage1_iterations=stage1_iterations, prior_quantile=prior_quantile,
-						pivot=pivot)
+						pivot=pivot, latent_dim=latent_dim, latent_prior_sd=latent_prior_sd)
 
 	print("Performing Empirical Bayes estimation of dispersion.")
 	mu_hat = torch.tensor(pd.read_csv(data_path / mu_file).transpose().to_numpy(), dtype=torch.float64)
@@ -562,7 +579,9 @@ def fit_dispersion_model(nbsr_model, pi_hat, iterations, lr):
 @click.option('--stage1_iterations', type=int, default=None, help="Iterations of the stage-1 fit (default: half of -i).")
 @click.option('--prior_quantile', type=float, default=0.95, show_default=True, help="Quantile of |beta| matched to the prior tail (empirical prior).")
 @click.option('--pivot', is_flag=True, show_default=True, default=False, type=bool)
-def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, beta_prior_sd, stage1_prior_sd, stage1_iterations, prior_quantile, pivot):
+@click.option('--latent_dim', type=int, default=0, show_default=True, help="Number of latent factors K: eta_ij = x_i' beta_j + z_i' gamma_j with z_i ~ N(0, I) and gamma_j ~ N(0, latent_prior_sd).")
+@click.option('--latent_prior_sd', type=float, default=1.0, show_default=True, help="Prior sd of the latent loadings gamma_j.")
+def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, sigma_bj_prior_sd, sigma_b, dispersion_link, no_feature_offsets, z_total_counts, dispersion_model_file, trended_dispersion, estimate_dispersion_sd, beta_prior_sd, stage1_prior_sd, stage1_iterations, prior_quantile, pivot, latent_dim, latent_prior_sd):
 
 	data_path = Path(data_path)
 	losses = []
@@ -585,7 +604,7 @@ def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, s
 							beta_prior_sd=list(beta_prior_sd) or None,
 							beta_prior="fixed" if beta_prior_sd else "empirical",
 							stage1_prior_sd=stage1_prior_sd, stage1_iterations=stage1_iterations, prior_quantile=prior_quantile,
-							pivot=pivot)
+							pivot=pivot, latent_dim=latent_dim, latent_prior_sd=latent_prior_sd)
 		loss_history, _ = run(config)
 		losses.append(np.min(loss_history)) # store the best (minimal) loss.
 
@@ -606,8 +625,9 @@ def train(data_path, vars, iterations, lr, runs, z_columns, z_log, b_pi_prior, s
 @click.option('--absolute_fc', default=False, is_flag=True, type=bool)
 @click.option('--recompute_hessian', is_flag=True, show_default=True, default=False, type=bool)
 @click.option('--skip_cov', is_flag=True, show_default=True, default=False, type=bool, help="Do not compute/save the per-sample covariance of logRR across features.")
-def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, skip_cov):
-	generate_results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, save_cov=not skip_cov)
+@click.option('--latent_fitted', is_flag=True, default=False, help="Evaluate the contrast at each sample's fitted latent scores instead of at Z = 0 (latent-factor models only).")
+def results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, skip_cov, latent_fitted):
+	generate_results(checkpoint_path, var, w1, w0, absolute_fc, recompute_hessian, save_cov=not skip_cov, latent_at_zero=not latent_fitted)
 
 
 cli.add_command(eb)

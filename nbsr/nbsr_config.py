@@ -28,6 +28,8 @@ class NBSRConfig():
     dispersion_model_file:  str | None = None # we will look for output_path / dispersion_model_file
     update_dispersion:      bool = False  # optimise a pre-fitted dispersion model jointly with beta.
     pivot:  bool = False
+    latent_dim: int = 0                  # number of latent factors K in eta_ij = x_i' beta_j + z_i' gamma_j (0 = none)
+    latent_prior_sd: float = 1.0         # prior sd of the loadings Gamma (the scores Z have a N(0, 1) prior)
     beta_prior_sd: list[float] | None = None  # prior sd of beta per covariate (intercept first). None = "empirical":
                                          #   a stage-1 fit with a wide prior, then per-covariate sd matched to the
                                          #   upper quantile of |beta| (DESeq2-style), then the main fit with it fixed.
