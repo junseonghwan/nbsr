@@ -36,6 +36,11 @@ class NBSRConfig():
     stage1_prior_sd: float = 10.0        # prior sd of every covariate in the stage-1 fit
     prior_quantile: float = 0.95         # |beta| quantile matched to the prior's tail
     init_from: Path | None = None        # checkpoint whose beta and dispersion parameters initialise the fit
+    prior_file: str | None = None        # prior.json from `nbsr prior` (fixes beta_prior_sd, warm start, dispersion)
+    dispersion_from: str = "joint"       # "joint": dispersion model fitted with beta; "deseq2": fitted at DESeq2's
+                                         #   composition first and held fixed (small-sample route)
+    eb_iterations: int = 3000            # iterations for fitting the dispersion model at DESeq2's composition
+    eb_lr: float = 0.05
     use_cuda_if_available: bool = True
 
     def dump_json(self, file: str | Path):

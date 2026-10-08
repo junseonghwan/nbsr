@@ -4,7 +4,8 @@ import pytest
 import torch
 
 import nbsr.dispersion as dm
-import nbsr.main as main
+import nbsr.inference as inference
+import nbsr.prior as prior
 import nbsr.negbinomial_model as nbm
 import nbsr.nbsr_dispersion as nbsrd
 from tests import reference_hessians
@@ -112,7 +113,7 @@ def test_logRR_standard_errors_match_inverse_formula(pivot):
     model = _base_model(pivot)
     I = -model.log_posterior_hessian(model.beta.detach())
     x_map = {"grp_b": 1, "z_c": 0}  # column index excluding the intercept; only "grp" is contrasted
-    logRR, log2RR, se, cov = main.inference_logRR(model, "grp", "b", "a", x_map, I, return_cov=True)
+    logRR, log2RR, se, cov = inference.inference_logRR(model, "grp", "b", "a", x_map, I, return_cov=True)
     N, J = model.Y.shape
     assert logRR.shape == se.shape == (N, J) and cov.shape == (N, J, J)
     np.testing.assert_allclose(log2RR, logRR / np.log(2))
@@ -134,11 +135,11 @@ def test_logRR_standard_errors_match_inverse_formula(pivot):
 
 def test_cholesky_with_jitter_adds_ridge_only_when_needed():
     A = torch.tensor([[4.0, 1.0], [1.0, 3.0]], dtype=torch.float64)
-    torch.testing.assert_close(main.cholesky_with_jitter(A), torch.linalg.cholesky(A))
+    torch.testing.assert_close(inference.cholesky_with_jitter(A), torch.linalg.cholesky(A))
     singular = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=torch.float64)
-    assert torch.isfinite(main.cholesky_with_jitter(singular)).all()
+    assert torch.isfinite(inference.cholesky_with_jitter(singular)).all()
     with pytest.raises(RuntimeError):
-        main.cholesky_with_jitter(-A)
+        inference.cholesky_with_jitter(-A)
 
 
 def test_callable_link_matches_builtin_logit():
@@ -158,6 +159,38 @@ def test_empirical_prior_sd_matches_quantile():
     b = np.stack([rng.normal(0, 2.0, dim), rng.normal(0, 0.3, dim)])
     b[1, :3] = 50.0                                   # non-converged coefficients must not widen the prior
     H = np.eye(P * dim) * 4.0                         # equal precision -> equal weights
-    sds = main.empirical_prior_sd(b.reshape(-1), H, P, quantile=0.95)
+    sds = prior.empirical_prior_sd(b.reshape(-1), H, P, quantile=0.95)
     for d, expected in enumerate([np.quantile(np.abs(b[0]), 0.95), np.quantile(np.abs(b[1, 3:]), 0.95)]):
         assert abs(sds[d] - expected / 1.959964) < 0.05 * expected / 1.959964
+
+
+def test_clr_contrast_matches_explicit_centring_and_inverse_se():
+    model = _base_model(pivot=True)
+    x_map = {"grp_b": 1, "z_c": 0}
+    I = -model.log_posterior_hessian(model.beta.detach())
+    delta, R = inference.clr_contrast(model, x_map, "grp", "b", "a")
+    # Explicit: coefficient of column grp_b (design column 2) per feature, pivot feature 0, centred over all K.
+    b = model.beta.detach().reshape(model.covariate_count, model.dim)
+    d = torch.cat([b[2], torch.zeros(1, dtype=torch.float64)])
+    torch.testing.assert_close(delta, d - d.mean())
+    L = inference.cholesky_with_jitter(I)
+    se, _ = inference.contrast_se(L, R)
+    S = torch.linalg.inv(0.5 * (I + I.T))
+    torch.testing.assert_close(se, torch.sqrt(torch.diagonal(R @ S @ R.T)), rtol=1e-8, atol=1e-8)
+    # Draws from the Laplace approximation reproduce the delta-method sd.
+    draws = inference.laplace_draws_of_contrasts(L, R, delta, 20000, seed=1)
+    torch.testing.assert_close(draws.std(0), se, rtol=0.05, atol=1e-3)
+    torch.testing.assert_close(draws.mean(0), delta, rtol=0.05, atol=2e-2)
+
+
+def test_reference_set_and_kde_mode():
+    pooled = torch.tensor([0.5, 0.2, 0.1, 0.1, 0.05, 0.05], dtype=torch.float64)
+    assert inference.reference_set(pooled).tolist() == list(range(6))
+    assert set(inference.reference_set(pooled, top_frac=0.5, min_features=2).tolist()) == {0, 1, 2}
+    assert inference.reference_set(pooled, top_frac=0.1, min_features=2).numel() == 2
+    torch.manual_seed(0)
+    x = torch.cat([torch.randn(400, dtype=torch.float64) * 0.05 - 0.3, torch.randn(20, dtype=torch.float64) + 1.5])
+    mode = inference.kde_mode(x)
+    assert abs(mode.item() + 0.3) < 0.03, mode          # the null bulk, not the mean (~ -0.2)
+    modes = inference.kde_mode(torch.stack([x, x + 1.0]))
+    torch.testing.assert_close(modes[1] - modes[0], torch.tensor(1.0, dtype=torch.float64), atol=1e-6, rtol=0)
